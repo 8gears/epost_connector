@@ -1,11 +1,3 @@
-const STATUS_COLORS = {
-	New: "orange",
-	Downloaded: "blue",
-	Analyzed: "purple",
-	Imported: "green",
-	Ignored: "gray",
-};
-
 // Matches TERMINAL_STATUSES in epost/sync.py: the pipeline never leaves these.
 const TERMINAL_STATUSES = ["Imported", "Ignored"];
 
@@ -15,22 +7,16 @@ frappe.ui.form.on("ePost Letter", {
 		// its own button, so the field itself is never edited by hand.
 		frm.set_df_property("status", "read_only", 1);
 
-		set_indicator(frm);
+		// The page indicator is not set here on purpose. getdoctype ships
+		// epost_letter_list.js as meta.__list_js and model.js:255 evaluates it on
+		// the form route too, so frappe.get_indicator (indicator.js:87) already
+		// reaches listview_settings.get_indicator. Setting it again here would
+		// also clobber frappe's own "Not Saved" indicator on a dirty form.
 		set_headline(frm);
 		render_preview(frm);
 		add_actions(frm);
 	},
 });
-
-function set_indicator(frm) {
-	if (frm.doc.sync_error) {
-		frm.page.set_indicator(__("Sync Error"), "red");
-		return;
-	}
-	if (frm.doc.status) {
-		frm.page.set_indicator(__(frm.doc.status), STATUS_COLORS[frm.doc.status] || "gray");
-	}
-}
 
 function set_headline(frm) {
 	frm.dashboard.clear_headline();
@@ -96,8 +82,23 @@ function render_preview(frm) {
 		return;
 	}
 
-	// The file is private; the iframe rides the user's own Desk session, so a
-	// user without read access on this letter sees nothing.
+	// `file` is a plain URL string, so it can outlive the File row it points at.
+	// Without this the iframe would 403 and render as a blank rectangle with no
+	// explanation. A user who can open this form can read its attachment, so a
+	// missing row means the file is gone, not that access was refused.
+	frappe.db.get_value("File", { file_url: frm.doc.file }, "name").then(({ message }) => {
+		if (!message || !message.name) {
+			render_empty_preview(frm, wrapper, __("The PDF record for this letter no longer exists."));
+			return;
+		}
+		render_iframe(frm, wrapper);
+	});
+}
+
+function render_iframe(frm, wrapper) {
+	// The file is private; the iframe rides the user's own Desk session.
+	// .pdf is not in frappe's FORCE_DOWNLOAD_EXTENSIONS (utils/response.py:309),
+	// so it is served inline as application/pdf rather than as a download.
 	const url = frappe.utils.escape_html(frm.doc.file);
 	$(`
 		<div class="flex justify-between align-center mb-2">
@@ -116,10 +117,12 @@ function render_preview(frm) {
 	`).appendTo(wrapper);
 }
 
-function render_empty_preview(frm, wrapper) {
-	const message = frm.doc.sync_error
-		? __("The PDF could not be fetched. See the error above.")
-		: __("No PDF has been downloaded for this letter yet.");
+function render_empty_preview(frm, wrapper, reason) {
+	const message =
+		reason ||
+		(frm.doc.sync_error
+			? __("The PDF could not be fetched. See the error above.")
+			: __("No PDF has been downloaded for this letter yet."));
 
 	const $empty = $(`
 		<div class="text-center text-muted py-5">

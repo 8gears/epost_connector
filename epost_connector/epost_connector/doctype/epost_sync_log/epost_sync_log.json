@@ -1,0 +1,139 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "format:EPOST-SYNC-{#####}",
+ "creation": "2026-09-01 00:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 0,
+ "engine": "InnoDB",
+ "field_order": [
+  "run_section",
+  "started_at",
+  "ended_at",
+  "run_column",
+  "status",
+  "counts_section",
+  "letters_seen",
+  "letters_new",
+  "counts_column",
+  "files_downloaded",
+  "letters_analyzed",
+  "errors_section",
+  "errors"
+ ],
+ "fields": [
+  {
+   "fieldname": "run_section",
+   "fieldtype": "Section Break",
+   "label": "Run"
+  },
+  {
+   "fieldname": "started_at",
+   "fieldtype": "Datetime",
+   "in_list_view": 1,
+   "label": "Started At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "ended_at",
+   "fieldtype": "Datetime",
+   "label": "Ended At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "run_column",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "Running",
+   "description": "A run left at Running means the worker died before it could finish.",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Status",
+   "options": "Running\nSuccess\nPartial\nFailed",
+   "read_only": 1
+  },
+  {
+   "fieldname": "counts_section",
+   "fieldtype": "Section Break",
+   "label": "Counts"
+  },
+  {
+   "fieldname": "letters_seen",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Letters Seen",
+   "read_only": 1
+  },
+  {
+   "fieldname": "letters_new",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Letters New",
+   "read_only": 1
+  },
+  {
+   "fieldname": "counts_column",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "files_downloaded",
+   "fieldtype": "Int",
+   "label": "Files Downloaded",
+   "read_only": 1
+  },
+  {
+   "fieldname": "letters_analyzed",
+   "fieldtype": "Int",
+   "label": "Letters Analyzed",
+   "read_only": 1
+  },
+  {
+   "fieldname": "errors_section",
+   "fieldtype": "Section Break",
+   "label": "Errors"
+  },
+  {
+   "description": "One line per letter that failed. The run continues past a failing letter.",
+   "fieldname": "errors",
+   "fieldtype": "Long Text",
+   "label": "Errors",
+   "read_only": 1
+  }
+ ],
+ "in_create": 1,
+ "index_web_pages_for_search": 0,
+ "links": [],
+ "modified": "2026-09-01 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "ePost Connector",
+ "name": "ePost Sync Log",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1
+  },
+  {
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Accounts Manager",
+   "share": 1
+  }
+ ],
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 0
+}

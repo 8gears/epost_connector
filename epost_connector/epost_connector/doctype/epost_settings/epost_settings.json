@@ -1,0 +1,191 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "creation": "2026-09-01 00:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "enabled",
+  "connection_section",
+  "api_base_url",
+  "username",
+  "password",
+  "connection_column",
+  "tenant_id",
+  "company_id",
+  "fetch_tenants",
+  "sync_section",
+  "sync_schedule_info",
+  "last_sync_at",
+  "sync_column",
+  "last_sync_status",
+  "extraction_section",
+  "extractor",
+  "accounting_section",
+  "company",
+  "default_item_code",
+  "accounting_column",
+  "default_expense_account",
+  "default_cost_center"
+ ],
+ "fields": [
+  {
+   "default": "0",
+   "description": "When off, the hourly scheduled sync does nothing. Manual syncs still run.",
+   "fieldname": "enabled",
+   "fieldtype": "Check",
+   "label": "Enabled"
+  },
+  {
+   "fieldname": "connection_section",
+   "fieldtype": "Section Break",
+   "label": "ePost API Connection"
+  },
+  {
+   "default": "https://api.epost.ch",
+   "fieldname": "api_base_url",
+   "fieldtype": "Data",
+   "label": "API Base URL",
+   "reqd": 1
+  },
+  {
+   "description": "The KLARA/ePost login email.",
+   "fieldname": "username",
+   "fieldtype": "Data",
+   "label": "Username"
+  },
+  {
+   "description": "Set at login.epost.ch/auth/realms/klara/account under Authentication.",
+   "fieldname": "password",
+   "fieldtype": "Password",
+   "label": "Password"
+  },
+  {
+   "fieldname": "connection_column",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "Filled by Fetch Tenants. A token is only valid for one tenant/company pair.",
+   "fieldname": "tenant_id",
+   "fieldtype": "Data",
+   "label": "Tenant ID"
+  },
+  {
+   "fieldname": "company_id",
+   "fieldtype": "Data",
+   "label": "Company ID"
+  },
+  {
+   "fieldname": "fetch_tenants",
+   "fieldtype": "Button",
+   "label": "Fetch Tenants"
+  },
+  {
+   "fieldname": "sync_section",
+   "fieldtype": "Section Break",
+   "label": "Synchronisation"
+  },
+  {
+   "fieldname": "sync_schedule_info",
+   "fieldtype": "HTML",
+   "label": "Schedule",
+   "options": "<p class=\"text-muted small\">The sync runs <b>hourly</b> on the <code>hourly_long</code> scheduler event. It is one-way and read-only: letters are copied from ePost into ERPNext and nothing is ever written back. Re-running is safe, letters are keyed on their ePost id.</p>"
+  },
+  {
+   "fieldname": "last_sync_at",
+   "fieldtype": "Datetime",
+   "label": "Last Sync At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "sync_column",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "last_sync_status",
+   "fieldtype": "Small Text",
+   "label": "Last Sync Status",
+   "read_only": 1
+  },
+  {
+   "fieldname": "extraction_section",
+   "fieldtype": "Section Break",
+   "label": "Document Extraction"
+  },
+  {
+   "default": "None",
+   "description": "Which extractor reads downloaded PDFs. \"None\" leaves letters at Downloaded for a human to complete.",
+   "fieldname": "extractor",
+   "fieldtype": "Select",
+   "label": "Extractor",
+   "options": "\nNone"
+  },
+  {
+   "fieldname": "accounting_section",
+   "fieldtype": "Section Break",
+   "label": "Purchase Invoice Defaults"
+  },
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "label": "Company",
+   "options": "Company"
+  },
+  {
+   "description": "Optional service Item for the invoice line. Left empty, a non-stock line carrying the letter title is used.",
+   "fieldname": "default_item_code",
+   "fieldtype": "Link",
+   "label": "Default Item",
+   "options": "Item"
+  },
+  {
+   "fieldname": "accounting_column",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "default_expense_account",
+   "fieldtype": "Link",
+   "label": "Default Expense Account",
+   "options": "Account"
+  },
+  {
+   "fieldname": "default_cost_center",
+   "fieldtype": "Link",
+   "label": "Default Cost Center",
+   "options": "Cost Center"
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "issingle": 1,
+ "links": [],
+ "modified": "2026-09-01 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "ePost Connector",
+ "name": "ePost Settings",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "role": "Accounts Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

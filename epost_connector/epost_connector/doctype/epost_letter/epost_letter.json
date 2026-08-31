@@ -1,0 +1,321 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "field:letter_id",
+ "creation": "2026-09-01 00:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "letter_section",
+  "letter_id",
+  "title",
+  "sender_name",
+  "received_at",
+  "letter_column",
+  "status",
+  "letter_type",
+  "epost_status",
+  "document_types",
+  "document_section",
+  "file",
+  "thumbnail",
+  "document_column",
+  "content_sha256",
+  "preview_section",
+  "pdf_preview",
+  "extraction_section",
+  "vendor_name",
+  "invoice_number",
+  "invoice_date",
+  "due_date",
+  "extraction_column",
+  "currency",
+  "amount",
+  "vat_amount",
+  "extraction_confidence",
+  "extraction_raw",
+  "accounting_section",
+  "supplier",
+  "accounting_column",
+  "purchase_invoice",
+  "sync_section",
+  "raw_metadata",
+  "sync_error"
+ ],
+ "fields": [
+  {
+   "fieldname": "letter_section",
+   "fieldtype": "Section Break",
+   "label": "Letter"
+  },
+  {
+   "description": "The letter id in ePost. This is also the document name and it never changes.",
+   "fieldname": "letter_id",
+   "fieldtype": "Data",
+   "in_standard_filter": 0,
+   "label": "Letter ID",
+   "read_only": 1,
+   "reqd": 1,
+   "set_only_once": 1,
+   "unique": 1
+  },
+  {
+   "fieldname": "title",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Title",
+   "read_only": 1
+  },
+  {
+   "fieldname": "sender_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Sender",
+   "read_only": 1
+  },
+  {
+   "fieldname": "received_at",
+   "fieldtype": "Datetime",
+   "in_list_view": 1,
+   "label": "Received At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "letter_column",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "New",
+   "description": "Pipeline state in ERPNext. It only ever moves forward; the sync never resets it.",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Status",
+   "options": "New\nDownloaded\nAnalyzed\nImported\nIgnored",
+   "reqd": 1
+  },
+  {
+   "fieldname": "letter_type",
+   "fieldtype": "Data",
+   "label": "Letter Type",
+   "read_only": 1
+  },
+  {
+   "description": "Read status as reported by ePost. Read-only here: this app never changes it.",
+   "fieldname": "epost_status",
+   "fieldtype": "Data",
+   "label": "ePost Status",
+   "read_only": 1
+  },
+  {
+   "fieldname": "document_types",
+   "fieldtype": "Small Text",
+   "label": "Document Types",
+   "read_only": 1
+  },
+  {
+   "fieldname": "document_section",
+   "fieldtype": "Section Break",
+   "label": "Document"
+  },
+  {
+   "fieldname": "file",
+   "fieldtype": "Attach",
+   "label": "PDF",
+   "read_only": 1
+  },
+  {
+   "fieldname": "thumbnail",
+   "fieldtype": "Attach Image",
+   "label": "Thumbnail",
+   "read_only": 1
+  },
+  {
+   "fieldname": "document_column",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "content_sha256",
+   "fieldtype": "Data",
+   "label": "Content SHA256",
+   "length": 64,
+   "read_only": 1
+  },
+  {
+   "fieldname": "preview_section",
+   "fieldtype": "Section Break",
+   "label": "Preview"
+  },
+  {
+   "fieldname": "pdf_preview",
+   "fieldtype": "HTML",
+   "label": "PDF Preview"
+  },
+  {
+   "collapsible": 1,
+   "description": "Filled by the configured extractor. Empty while the extractor is \"None\".",
+   "fieldname": "extraction_section",
+   "fieldtype": "Section Break",
+   "label": "Extraction"
+  },
+  {
+   "fieldname": "vendor_name",
+   "fieldtype": "Data",
+   "label": "Vendor Name",
+   "read_only": 1
+  },
+  {
+   "fieldname": "invoice_number",
+   "fieldtype": "Data",
+   "label": "Invoice Number",
+   "read_only": 1
+  },
+  {
+   "fieldname": "invoice_date",
+   "fieldtype": "Date",
+   "label": "Invoice Date",
+   "read_only": 1
+  },
+  {
+   "fieldname": "due_date",
+   "fieldtype": "Date",
+   "label": "Due Date",
+   "read_only": 1
+  },
+  {
+   "fieldname": "extraction_column",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "currency",
+   "fieldtype": "Link",
+   "label": "Currency",
+   "options": "Currency",
+   "read_only": 1
+  },
+  {
+   "fieldname": "amount",
+   "fieldtype": "Currency",
+   "label": "Amount",
+   "options": "currency",
+   "read_only": 1
+  },
+  {
+   "fieldname": "vat_amount",
+   "fieldtype": "Currency",
+   "label": "VAT Amount",
+   "options": "currency",
+   "read_only": 1
+  },
+  {
+   "description": "The extractor's own 0-1 estimate. Not interpreted by this app.",
+   "fieldname": "extraction_confidence",
+   "fieldtype": "Float",
+   "label": "Extraction Confidence",
+   "precision": "2",
+   "read_only": 1
+  },
+  {
+   "fieldname": "extraction_raw",
+   "fieldtype": "Code",
+   "label": "Extraction Raw",
+   "options": "JSON",
+   "read_only": 1
+  },
+  {
+   "fieldname": "accounting_section",
+   "fieldtype": "Section Break",
+   "label": "Accounting"
+  },
+  {
+   "description": "Set by hand or matched on import. The sync never overwrites it.",
+   "fieldname": "supplier",
+   "fieldtype": "Link",
+   "label": "Supplier",
+   "options": "Supplier"
+  },
+  {
+   "fieldname": "accounting_column",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "purchase_invoice",
+   "fieldtype": "Link",
+   "label": "Purchase Invoice",
+   "options": "Purchase Invoice",
+   "read_only": 1
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "sync_section",
+   "fieldtype": "Section Break",
+   "label": "Sync"
+  },
+  {
+   "description": "The letter object exactly as the ePost API returned it.",
+   "fieldname": "raw_metadata",
+   "fieldtype": "Code",
+   "label": "Raw Metadata",
+   "options": "JSON",
+   "read_only": 1
+  },
+  {
+   "fieldname": "sync_error",
+   "fieldtype": "Small Text",
+   "label": "Sync Error",
+   "read_only": 1
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "links": [],
+ "modified": "2026-09-01 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "ePost Connector",
+ "name": "ePost Letter",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Accounts Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Accounts User",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "search_fields": "letter_id,sender_name,title",
+ "show_title_field_in_link": 1,
+ "sort_field": "received_at",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "title",
+ "track_changes": 1
+}

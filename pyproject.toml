@@ -1,0 +1,47 @@
+[project]
+name = "epost_connector"
+authors = [
+    { name = "8gears", email = "vadim@8gears.com" },
+]
+description = "Sync the Swiss Post ePost / KLARA digital letterbox into ERPNext"
+requires-python = ">=3.11"
+readme = "README.md"
+dynamic = ["version"]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/8gears/epost_connector"
+
+[build-system]
+requires = ["flit_core >=3.4,<4"]
+build-backend = "flit_core.buildapi"
+
+[tool.bench.frappe-dependencies]
+frappe = ">=16.0.0,<17.0.0"
+erpnext = ">=16.0.0,<17.0.0"
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["F", "E", "W", "I", "UP", "B", "RUF", "N"]
+ignore = [
+    "B017", # assertRaises(Exception)
+    "E101", # indentation contains mixed spaces and tabs
+    "E203", # whitespace before ':'
+    "E501", # line too long, formatter's job
+    "F401", # imported but unused, re-exports are intentional
+    "W191", # indentation contains tabs
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Frappe resolves DocType controllers by `doctype.replace(" ", "")`, so the
+# class names must be `ePostSettings` etc. and cannot be PascalCase.
+"epost_connector/epost_connector/doctype/*/*.py" = ["N801"]
+"epost_connector/epost/client.py" = ["N801", "N818"]
+"epost_connector/epost/exceptions.py" = ["N801", "N818"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "tab"

@@ -15,8 +15,12 @@ import json
 import unittest
 
 from epost_connector.epost import client as client_module
-from epost_connector.epost.client import ePostClient
-from epost_connector.epost.exceptions import ePostWriteAttempt
+from epost_connector.epost.client import INBOX_FOLDER, STORAGE_ROOT, ePostClient
+from epost_connector.epost.exceptions import (
+	ePostContentError,
+	ePostPaginationLimit,
+	ePostWriteAttempt,
+)
 
 
 class StubResponse:
@@ -59,7 +63,21 @@ class StubSession:
 			params = kwargs["params"]
 			start, limit = params["offset"], params["limit"]
 			return StubResponse(200, self.letters[start : start + limit], url=url)
+		if url.endswith("/epost/v2/archives/directories"):
+			return StubResponse(200, [], url=url)
+		if url.endswith("/epost/v2/archives/letters"):
+			return StubResponse(200, [], url=url)
 		return StubResponse(404, {"message": "unexpected", "code": "X"}, url=url)
+
+
+class WindowSession(StubSession):
+	"""A service that ignores `offset` and always answers with the same window."""
+
+	def request(self, method, url, headers=None, timeout=None, **kwargs):
+		if url.endswith("/epost/v2/letters"):
+			self.calls.append((method, url, kwargs.get("params"), None))
+			return StubResponse(200, self.letters[: kwargs["params"]["limit"]], url=url)
+		return super().request(method, url, headers=headers, timeout=timeout, **kwargs)
 
 
 class ReadOnlyContractTest(unittest.TestCase):
@@ -144,6 +162,128 @@ class PaginationTest(unittest.TestCase):
 	def test_limit_is_capped_at_the_documented_maximum(self):
 		self.client.list_letters(limit=99999)
 		self.assertEqual(self._list_calls()[0][2]["limit"], ePostClient.MAX_PAGE_SIZE)
+
+
+class WindowFallbackTest(unittest.TestCase):
+	"""The spec documents `offset`; a reference client says it is a window."""
+
+	def test_an_ignored_offset_is_reported_not_looped(self):
+		session = WindowSession(total=250)
+		client = ePostClient("user@example.com", "pw", session=session, page_size=100)
+
+		with self.assertRaises(ePostPaginationLimit) as caught:
+			list(client.iter_letters())
+
+		# The first window is still delivered before the limit is reported.
+		self.assertEqual(caught.exception.reachable, 100)
+		self.assertIn("ignoring `offset`", str(caught.exception))
+
+	def test_the_first_window_is_yielded_before_the_limit_is_raised(self):
+		session = WindowSession(total=250)
+		client = ePostClient("user@example.com", "pw", session=session, page_size=100)
+
+		delivered = []
+		with self.assertRaises(ePostPaginationLimit):
+			for letter in client.iter_letters():
+				delivered.append(letter["id"])
+
+		self.assertEqual(len(delivered), 100)
+		self.assertEqual(len(set(delivered)), 100)
+
+
+class ContentValidationTest(unittest.TestCase):
+	"""A 200 is not proof of a PDF: gateway error pages and 0 bytes were seen."""
+
+	def _client_returning(self, body: bytes):
+		class ContentSession(StubSession):
+			def request(self, method, url, headers=None, timeout=None, **kwargs):
+				if url.endswith("/content"):
+					return StubResponse(200, content=body, url=url)
+				return super().request(method, url, headers=headers, timeout=timeout, **kwargs)
+
+		return ePostClient("user@example.com", "pw", session=ContentSession())
+
+	def test_an_html_error_page_is_refused(self):
+		client = self._client_returning(b"<html><body>gateway error</body></html>")
+		with self.assertRaises(ePostContentError):
+			client.get_letter_content("1")
+
+	def test_an_empty_body_is_refused(self):
+		client = self._client_returning(b"")
+		with self.assertRaises(ePostContentError):
+			client.get_letter_content("1")
+
+	def test_a_pdf_behind_a_byte_order_mark_is_accepted(self):
+		client = self._client_returning(b"\xef\xbb\xbf%PDF-1.4 body")
+		self.assertTrue(client.get_letter_content("1").endswith(b"body"))
+
+
+class RedactionTest(unittest.TestCase):
+	"""The gateway can quote our own credentials back at us."""
+
+	def test_an_echoed_password_never_reaches_the_error_message(self):
+		password = "correct-horse-battery-staple"
+
+		class EchoSession(StubSession):
+			def request(self, method, url, headers=None, timeout=None, **kwargs):
+				if url.endswith("/epost/v2/letters"):
+					return StubResponse(400, {"message": f"rejected form: password={password}"}, url=url)
+				return super().request(method, url, headers=headers, timeout=timeout, **kwargs)
+
+		client = ePostClient("user@example.com", password, session=EchoSession())
+		with self.assertRaises(Exception) as caught:
+			client.list_letters()
+
+		self.assertNotIn(password, str(caught.exception))
+		self.assertIn("[redacted]", str(caught.exception))
+
+
+class ArchiveCoverageTest(unittest.TestCase):
+	"""A letter archived on ePost must not vanish from ERPNext."""
+
+	def test_inbox_and_archive_are_both_listed_and_deduplicated(self):
+		class ArchiveSession(StubSession):
+			def request(self, method, url, headers=None, timeout=None, **kwargs):
+				if url.endswith("/epost/v2/letters"):
+					return StubResponse(200, [{"id": "1"}, {"id": "2"}], url=url)
+				if url.endswith("/epost/v2/archives/directories"):
+					return StubResponse(
+						200,
+						[
+							{"directoryId": "", "directoryName": "ePost Scancenter"},
+							{"directoryId": "d1", "directoryName": "Rechnungen"},
+						],
+						url=url,
+					)
+				if url.endswith("/epost/v2/archives/letters"):
+					if kwargs["params"].get("directory-id") == "d1":
+						return StubResponse(200, [{"id": "4"}, {"id": "2"}], url=url)
+					return StubResponse(200, [{"id": "3"}], url=url)
+				return super().request(method, url, headers=headers, timeout=timeout, **kwargs)
+
+		client = ePostClient("user@example.com", "pw", session=ArchiveSession())
+		found = {letter["id"]: folder for letter, folder in client.iter_all_letters()}
+
+		self.assertEqual(found, {"1": INBOX_FOLDER, "2": INBOX_FOLDER, "3": STORAGE_ROOT, "4": "Rechnungen"})
+
+	def test_a_decomposed_folder_name_is_normalised(self):
+		class NfdSession(StubSession):
+			def request(self, method, url, headers=None, timeout=None, **kwargs):
+				if url.endswith("/epost/v2/letters"):
+					return StubResponse(200, [], url=url)
+				if url.endswith("/epost/v2/archives/directories"):
+					# "Bürö" written decomposed: u + combining diaeresis.
+					return StubResponse(200, [{"directoryId": "d1", "directoryName": "Bürö"}], url=url)
+				if url.endswith("/epost/v2/archives/letters"):
+					if kwargs["params"].get("directory-id") == "d1":
+						return StubResponse(200, [{"id": "9"}], url=url)
+					return StubResponse(200, [], url=url)
+				return super().request(method, url, headers=headers, timeout=timeout, **kwargs)
+
+		client = ePostClient("user@example.com", "pw", session=NfdSession())
+		folders = [folder for _letter, folder in client.iter_all_letters()]
+
+		self.assertEqual(folders, ["Bürö"])
 
 
 class AuthTest(unittest.TestCase):

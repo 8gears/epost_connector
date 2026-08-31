@@ -48,6 +48,26 @@ class ePostAuthError(ePostAPIError):
 	"""Authentication failed, or the token could not be renewed."""
 
 
+class ePostContentError(ePostAPIError):
+	"""The content endpoint answered 200 with something that is not a PDF.
+
+	Observed in the wild: a gateway error page, and a zero-byte body. Both
+	arrive as a successful response, so only the bytes can tell.
+	"""
+
+
+class ePostPaginationLimit(ePostAPIError):
+	"""`offset` was ignored, so only the first window of letters is reachable.
+
+	Not fatal: the letters inside the window are still good. The caller decides
+	whether to carry on with a partial listing or to give up.
+	"""
+
+	def __init__(self, message: str, *, reachable: int) -> None:
+		super().__init__(message)
+		self.reachable = reachable
+
+
 class ePostWriteAttempt(ePostError):
 	"""A state-changing call toward ePost was attempted and blocked.
 

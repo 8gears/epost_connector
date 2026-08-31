@@ -14,6 +14,7 @@
   "received_at",
   "letter_column",
   "status",
+  "folder",
   "letter_type",
   "epost_status",
   "document_types",
@@ -96,6 +97,14 @@
    "label": "Status",
    "options": "New\nDownloaded\nAnalyzed\nImported\nIgnored",
    "reqd": 1
+  },
+  {
+   "description": "Where the letter lives on ePost: INBOX, Storage, or the eArchive folder name.",
+   "fieldname": "folder",
+   "fieldtype": "Data",
+   "in_standard_filter": 1,
+   "label": "ePost Folder",
+   "read_only": 1
   },
   {
    "fieldname": "letter_type",

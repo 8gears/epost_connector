@@ -29,9 +29,10 @@ rather than duplicating.
 
 ```
 ePost API (api.epost.ch)
-	│  GET only
+	│  GET only — inbox listing AND the eArchive folders
 	▼
-epost/client.py ......... auth (password + refresh grant), pagination, retries
+epost/client.py ......... auth (password + refresh grant), pagination, retries,
+	│                     PDF validation, credential redaction
 	▼
 epost/sync.py ........... upsert ePost Letter, download PDF -> private File,
 	│                     write one ePost Sync Log per run.  Hourly, and on demand.
@@ -48,6 +49,60 @@ Pipeline status on `ePost Letter`, which only ever moves forward:
 
 `Imported` and `Ignored` are terminal. The sync still refreshes their ePost
 metadata but never touches their pipeline state, supplier, or extraction fields.
+
+### The sync covers the inbox *and* the archive
+
+The inbox listing is not the whole letterbox. A letter archived by a user, or by
+the n8n workflow, leaves the inbox listing entirely, and an inbox-only sync would
+quietly drop it from ERPNext. So each run reads:
+
+1. `GET /epost/v2/letters` — the inbox,
+2. `GET /epost/v2/archives/letters` — Storage root,
+3. `GET /epost/v2/archives/letters?directory-id=…` for every folder from
+   `GET /epost/v2/archives/directories`.
+
+Results are deduplicated on letter id, and where the letter was found is written
+to the `ePost Folder` field (`INBOX`, `Storage`, or the folder name). Folder
+names are NFC-normalised, because the service can return them decomposed and the
+same folder would otherwise read as two different strings.
+
+### Two facts the spec gets wrong, and how the client handles them
+
+The vendored spec and a working reference client against the live service
+disagree in a few places. Where they do, the client accepts both rather than
+picking a winner it cannot verify:
+
+- **`offset` may or may not work.** The spec documents it (spec:11641-11651); the
+  reference client never sends it and treats the listing as a fixed window. The
+  client pages on `offset` and watches the ids coming back. If a full page
+  contributes nothing new, `offset` is being ignored, and it says so with
+  `ePostPaginationLimit` naming how many letters are reachable, instead of
+  looping forever or silently truncating. The letters inside the window are still
+  synced and the run is marked `Partial`, not `Failed`.
+- **`/letters/inbox/count`** returns a bare integer per the spec and `{"count": n}`
+  per the reference. Both are accepted.
+- **Search** takes `value` per the spec and `keyword` per the reference. Both are
+  sent.
+- **The sender name** has no field in the `Letter` schema at all. In practice
+  `description` carries it ("Invoice from …"), so that is read first.
+
+### Downloaded bytes are validated before they are stored
+
+The content endpoint has been observed answering `200` with a gateway HTML error
+page, and with zero bytes. Both look like success to everything except an
+inspection of the body, and either one stored under a letter's name is
+indistinguishable from the letter afterwards. So a download is accepted only if
+it is non-empty and contains `%PDF-` within its first kilobyte (searched rather
+than anchored, so a byte-order mark is tolerated). On failure no File is created,
+the letter keeps its metadata row, and the reason lands in `Sync Error`.
+
+File names are derived from the letter id and a sanitised title, never from
+service-supplied strings: Frappe builds the stored path from `file_name`, so a
+value shaped like `../..` would otherwise decide where the file lands.
+
+Credentials are stripped from error text before it reaches an `ePost Sync Log`
+row or the Error Log, because an upstream gateway can quote the request that
+produced the error back at you, Authorization header and all.
 
 ## Install
 
@@ -172,16 +227,21 @@ Prints JSON:
   "missing_in_erpnext_count": 0,
   "extra_in_erpnext": [],
   "extra_in_erpnext_count": 0,
+  "listing_truncated": null,
   "in_sync": true
 }
 ```
 
+It counts the same ground the sync covers, inbox and archive together, so an
+archived letter is not reported as missing.
+
 `missing_in_erpnext` is the id set present in ePost but not here — run a sync.
 `extra_in_erpnext` is present here but no longer in ePost, which normally means
-the letter was deleted or archived in ePost after we copied it; this app will not
-remove it. `in_sync` is the acceptance criterion.
-
-It paginates the live letterbox, so it costs one API round trip per 200 letters.
+the letter was deleted in ePost after we copied it; this app will not remove it.
+`listing_truncated` is non-null when the service would not page past its window,
+in which case the comparison was made against a partial listing and `in_sync` is
+false regardless of the diffs — a clean diff over missing data is not agreement.
+`in_sync` is the acceptance criterion.
 
 ## License
 

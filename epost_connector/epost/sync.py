@@ -8,6 +8,7 @@ to ePost (see `client.py` for the read-only contract).
 from __future__ import annotations
 
 import hashlib
+import re
 from datetime import UTC, datetime
 from typing import Any
 
@@ -16,7 +17,7 @@ from frappe.utils import now_datetime
 from frappe.utils.data import convert_utc_to_system_timezone
 
 from epost_connector.epost.client import ePostClient
-from epost_connector.epost.exceptions import ePostError
+from epost_connector.epost.exceptions import ePostError, ePostPaginationLimit
 from epost_connector.extraction.pipeline import analyze_letter
 
 DOCTYPE = "ePost Letter"
@@ -34,9 +35,9 @@ def scheduled_sync() -> dict | None:
 	return sync_letters()
 
 
-def sync_letters(**filters: Any) -> dict:
-	"""Pull every letter, download missing PDFs, run the extraction stage."""
-	return LetterSync().run(**filters)
+def sync_letters() -> dict:
+	"""Pull every letter, inbox and archive, download PDFs, run extraction."""
+	return LetterSync().run()
 
 
 @frappe.whitelist()
@@ -62,11 +63,22 @@ def reconcile() -> dict:
 	frappe.only_for(("System Manager", "Accounts Manager"))
 
 	client = ePostClient.from_settings()
-	remote_ids = {str(payload.get("id")) for payload in client.iter_letters() if payload.get("id")}
-	local_ids = set(frappe.get_all(DOCTYPE, pluck="letter_id"))
+	remote_ids: set[str] = set()
+	truncated = None
 
+	try:
+		for payload, _folder in client.iter_all_letters():
+			if payload.get("id"):
+				remote_ids.add(str(payload["id"]))
+	except ePostPaginationLimit as exc:
+		# Report the ceiling instead of silently comparing against a partial
+		# listing, which would invent a clean diff out of missing data.
+		truncated = str(exc)
+
+	local_ids = set(frappe.get_all(DOCTYPE, pluck="letter_id"))
 	missing = sorted(remote_ids - local_ids)
 	extra = sorted(local_ids - remote_ids)
+
 	return {
 		"epost_letters": len(remote_ids),
 		"erpnext_letters": len(local_ids),
@@ -75,7 +87,8 @@ def reconcile() -> dict:
 		"missing_in_erpnext_count": len(missing),
 		"extra_in_erpnext": extra,
 		"extra_in_erpnext_count": len(extra),
-		"in_sync": not missing and not extra,
+		"listing_truncated": truncated,
+		"in_sync": not missing and not extra and not truncated,
 	}
 
 
@@ -91,12 +104,17 @@ class LetterSync:
 		self.downloaded = 0
 		self.analyzed = 0
 
-	def run(self, **filters: Any) -> dict:
+	def run(self) -> dict:
 		log = self._start_log()
 		try:
-			for payload in self.client.iter_letters(**filters):
+			for payload, folder in self.client.iter_all_letters():
 				self.seen += 1
-				self._sync_one(payload)
+				self._sync_one(payload, folder)
+		except ePostPaginationLimit as exc:
+			# The letters inside the window were still synced, so this is a
+			# partial run with a known ceiling, not a failure.
+			self.errors.append(str(exc))
+			return self._finish(log, "Partial")
 		except ePostError as exc:
 			self.errors.append(f"Sync aborted: {exc}")
 			return self._finish(log, "Failed")
@@ -107,28 +125,41 @@ class LetterSync:
 
 		return self._finish(log, "Partial" if self.errors else "Success")
 
-	def _sync_one(self, payload: dict) -> None:
+	def _sync_one(self, payload: dict, folder: str) -> None:
 		letter_id = str(payload.get("id") or "").strip()
 		if not letter_id:
 			self.errors.append(f"Letter without an id skipped: {frappe.as_json(payload)[:200]}")
 			return
 
+		# Metadata and content are committed separately: a letter whose PDF the
+		# gateway will not serve is still worth having as a row, with the reason
+		# recorded on it.
+		letter = self._guarded(letter_id, lambda: self._upsert(letter_id, payload, folder))
+		if letter is None or letter.status in TERMINAL_STATUSES:
+			return
+
+		self._guarded(letter_id, lambda: self._fetch_and_analyze(letter))
+
+	def _fetch_and_analyze(self, letter) -> None:
+		self.download(letter)
+		self._analyze(letter)
+
+	def _guarded(self, letter_id: str, action):
+		"""Run `action` in its own savepoint. One bad letter costs one letter."""
 		savepoint = f"epost_{frappe.generate_hash(length=8)}"
 		frappe.db.savepoint(savepoint)
 		try:
-			letter = self._upsert(letter_id, payload)
-			if letter.status not in TERMINAL_STATUSES:
-				self.download(letter)
-				self._analyze(letter)
+			result = action()
 			frappe.db.commit()
+			return result
 		except Exception as exc:
-			# One bad letter must not lose the whole run.
 			frappe.db.rollback(save_point=savepoint)
 			self.errors.append(f"{letter_id}: {exc}")
 			self._record_letter_error(letter_id, exc)
+			return None
 
-	def _upsert(self, letter_id: str, payload: dict):
-		values = self._metadata(payload)
+	def _upsert(self, letter_id: str, payload: dict, folder: str):
+		values = self._metadata(payload, folder)
 		name = frappe.db.get_value(DOCTYPE, {"letter_id": letter_id}, "name")
 
 		if not name:
@@ -175,7 +206,9 @@ class LetterSync:
 			return  # Thumbnails are cosmetic; never fail a sync over one.
 		if not content:
 			return
-		file_doc = self._attach(letter, f"{letter.letter_id}-thumb.jpg", content, field="thumbnail")
+		file_doc = self._attach(
+			letter, f"{_safe_name(letter.letter_id)}-thumb.jpg", content, field="thumbnail"
+		)
 		letter.db_set("thumbnail", file_doc.file_url, update_modified=False)
 
 	def _analyze(self, letter) -> None:
@@ -198,18 +231,19 @@ class LetterSync:
 
 	@staticmethod
 	def _pdf_filename(letter) -> str:
-		raw = (letter.raw_metadata and frappe.parse_json(letter.raw_metadata)) or {}
-		name = (raw.get("fileName") or "").strip()
-		if name.lower().endswith(".pdf"):
-			return f"{letter.letter_id}-{name}"
-		return f"{letter.letter_id}.pdf"
+		"""Derive a file name from the letter id and title, never from raw
+		service strings: a value shaped like `../..` would otherwise decide
+		where the file lands."""
+		stem = _safe_name(letter.letter_id)
+		title = _safe_name(letter.title)[:60].strip("_")
+		return f"{stem}-{title}.pdf" if title else f"{stem}.pdf"
 
 	@staticmethod
 	def _advance(letter, status: str) -> None:
 		if STATUS_RANK.get(status, 0) > STATUS_RANK.get(letter.status, 0):
 			letter.status = status
 
-	def _metadata(self, payload: dict) -> dict:
+	def _metadata(self, payload: dict, folder: str) -> dict:
 		document_types = payload.get("documentTypes") or []
 		return {
 			"title": payload.get("letterTitle") or payload.get("fileName") or payload.get("id"),
@@ -218,15 +252,22 @@ class LetterSync:
 			"document_types": ", ".join(str(t) for t in document_types) if document_types else None,
 			"epost_status": payload.get("readStatus"),
 			"letter_type": payload.get("letterType"),
+			"folder": folder,
 			"raw_metadata": frappe.as_json(payload),
 		}
 
 	@staticmethod
 	def _sender_name(payload: dict) -> str | None:
-		# The `Letter` schema (spec:16524) carries no sender name, only ids. Read
-		# `senderName` in case the live API returns more than it documents, then
-		# fall back to the participant id so the column is never blank.
-		return payload.get("senderName") or payload.get("senderParticipantId") or payload.get("senderUserId")
+		# The `Letter` schema (spec:16524) has no sender-name field. `description`
+		# is what actually carries it ("Invoice from <sender>"); `senderName` is
+		# read in case the live API returns more than it documents, and the
+		# participant id is the last resort so the column is never blank.
+		return (
+			payload.get("description")
+			or payload.get("senderName")
+			or payload.get("senderParticipantId")
+			or payload.get("senderUserId")
+		)
 
 	def _record_letter_error(self, letter_id: str, exc: Exception) -> None:
 		name = frappe.db.get_value(DOCTYPE, {"letter_id": letter_id}, "name")
@@ -275,6 +316,16 @@ class LetterSync:
 		)
 		frappe.db.commit()
 		return summary
+
+
+def _safe_name(value: Any) -> str:
+	"""Reduce a service-supplied string to characters that can only be a name.
+
+	Frappe builds the stored file path from `file_name`, so a value shaped like
+	a path would decide where the file lands.
+	"""
+	cleaned = re.sub(r"[^A-Za-z0-9_.-]", "_", str(value or ""))
+	return re.sub(r"^\.+", "_", cleaned) or "letter"
 
 
 def _parse_datetime(value: Any) -> datetime | None:

@@ -198,18 +198,19 @@ function pick_tenant(frm, tenants) {
 }
 
 function apply_tenant(frm, tenant) {
-	frm.set_value("tenant_id", tenant.tenant_id);
-	frm.set_value("company_id", String(tenant.company_id));
-
 	const announce = () =>
 		frappe.show_alert({
 			message: __("Tenant {0} selected.", [frappe.utils.escape_html(tenant.tenant_id)]),
 			indicator: "green",
 		});
 
-	// Re-picking the tenant already stored leaves the document clean, and a
-	// clean frm.save() never resolves.
-	frm.is_dirty() ? frm.save().then(announce) : announce();
+	// set_value resolves after the change handlers run, so is_dirty is only
+	// meaningful afterwards. Re-picking the tenant already stored leaves the
+	// document clean, and a clean frm.save() never resolves.
+	Promise.all([
+		frm.set_value("tenant_id", tenant.tenant_id),
+		frm.set_value("company_id", String(tenant.company_id)),
+	]).then(() => (frm.is_dirty() ? frm.save().then(announce) : announce()));
 }
 
 function test_connection(frm) {

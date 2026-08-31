@@ -167,10 +167,8 @@ function ignore(frm) {
 		__("Ignore letter {0}? It stays in ERPNext but drops out of the import queue.", [
 			frappe.utils.escape_html(frm.doc.title || frm.doc.letter_id),
 		]),
-		() => {
-			frm.set_value("status", "Ignored");
-			frm.save();
-		}
+		// set_value resolves after the change handlers run, so save only then.
+		() => frm.set_value("status", "Ignored").then(() => frm.save())
 	);
 }
 

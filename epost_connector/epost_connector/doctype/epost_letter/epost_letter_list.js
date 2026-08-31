@@ -6,8 +6,8 @@ const STATUS_COLORS = {
 	Ignored: "gray",
 };
 
-// Label -> the filter it applies, offered from the "Filter" button and used by
-// the workspace shortcuts. "To Import" is the queue a bookkeeper works through.
+// The views a bookkeeper actually works from, offered under a Quick Filters
+// button. "To Import" is the queue; "Sync Errors" is what needs a human.
 const QUICK_FILTERS = {
 	"New Letters": [["status", "=", "New"]],
 	"To Import": [["status", "in", ["Downloaded", "Analyzed"]]],
@@ -16,7 +16,7 @@ const QUICK_FILTERS = {
 };
 
 frappe.listview_settings["ePost Letter"] = {
-	add_fields: ["status", "file", "purchase_invoice", "sync_error", "amount", "currency"],
+	add_fields: ["status", "file", "purchase_invoice", "sync_error"],
 
 	// Ignored letters are a decision already taken; they are one click away
 	// under Quick Filters rather than in everyone's default view.
@@ -106,7 +106,7 @@ function sync_now(listview) {
 		freeze_message: __("Queueing the sync..."),
 		callback: () => {
 			frappe.show_alert({
-				message: __("Sync queued. It writes an {0} when it finishes.", [
+				message: __("Sync queued. Every run writes an {0}.", [
 					`<a href="/app/epost-sync-log">${__("ePost Sync Log")}</a>`,
 				]),
 				indicator: "blue",

@@ -13,7 +13,7 @@ const LOG_POLL_INTERVAL_MS = 2000;
 frappe.ui.form.on("ePost Settings", {
 	refresh(frm) {
 		frm.add_custom_button(__("Test Connection"), () => test_connection(frm), __("ePost"));
-		frm.add_custom_button(__("Fetch Tenants"), () => fetch_tenants(frm), __("ePost"));
+		frm.add_custom_button(__("Fetch Tenants"), () => start_fetch_tenants(frm), __("ePost"));
 		frm.add_custom_button(__("Sync Log"), () => frappe.set_route("List", "ePost Sync Log"));
 		frm.add_custom_button(__("Sync Now"), () => sync_now(frm)).addClass("btn-primary");
 
@@ -24,8 +24,9 @@ frappe.ui.form.on("ePost Settings", {
 		show_connection_state(frm);
 	},
 
+	// The "Fetch Tenants" Button field on the form.
 	fetch_tenants(frm) {
-		fetch_tenants(frm);
+		start_fetch_tenants(frm);
 	},
 });
 
@@ -52,7 +53,7 @@ function show_connection_state(frm) {
 
 		if (log) {
 			lines.push(
-				__("Last run {0}: {1} — {2}", [
+				__("Last run {0}: {1}, {2}", [
 					`<a href="/app/epost-sync-log/${encodeURIComponent(log.name)}">${frappe.datetime.comment_when(
 						log.started_at || log.creation
 					)}</a>`,
@@ -81,7 +82,15 @@ function latest_sync_log(after) {
 	return frappe.db
 		.get_list("ePost Sync Log", {
 			filters,
-			fields: ["name", "status", "started_at", "creation", "letters_seen", "letters_new", "files_downloaded"],
+			fields: [
+				"name",
+				"status",
+				"started_at",
+				"creation",
+				"letters_seen",
+				"letters_new",
+				"files_downloaded",
+			],
 			order_by: "creation desc",
 			limit: 1,
 		})
@@ -89,7 +98,8 @@ function latest_sync_log(after) {
 }
 
 function sync_now(frm) {
-	const queued_at = frappe.datetime.now_datetime();
+	// creation is written in the system timezone, so compare against that.
+	const queued_at = frappe.datetime.system_datetime();
 
 	frappe.call({
 		method: "epost_connector.epost.sync.run_sync_now",
@@ -127,7 +137,7 @@ function watch_for_log(frm, queued_at, attempts_left) {
 	});
 }
 
-function fetch_tenants(frm) {
+function start_fetch_tenants(frm) {
 	// The endpoint reads the stored password, so unsaved edits must land first.
 	// frm.save() on a clean document never resolves, so it is only called when
 	// there is something to save.

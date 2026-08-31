@@ -47,7 +47,7 @@ function set_headline(frm) {
 
 	if (frm.doc.status === "Imported" && frm.doc.purchase_invoice) {
 		frm.dashboard.set_headline(
-			__("Imported as {0}. It is a draft until someone submits it.", [
+			__("Imported as {0}.", [
 				`<a href="/app/purchase-invoice/${encodeURIComponent(frm.doc.purchase_invoice)}">
 					${frappe.utils.escape_html(frm.doc.purchase_invoice)}</a>`,
 			]),
@@ -102,7 +102,7 @@ function render_preview(frm) {
 	$(`
 		<div class="flex justify-between align-center mb-2">
 			<span class="text-muted small ellipsis">${frappe.utils.escape_html(
-				decodeURIComponent(frm.doc.file.split("/").pop())
+				frm.doc.file.split("/").pop()
 			)}</span>
 			<a class="btn btn-default btn-xs" href="${url}" target="_blank" rel="noopener">
 				${__("Open in new tab")}

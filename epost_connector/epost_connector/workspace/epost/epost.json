@@ -1,6 +1,6 @@
 {
  "charts": [],
- "content": "[{\"id\":\"epost_header\",\"type\":\"header\",\"data\":{\"text\":\"<span class=\\\"h4\\\"><b>ePost Letterbox</b></span>\",\"col\":12}},{\"id\":\"epost_sc_new\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"New Letters\",\"col\":3}},{\"id\":\"epost_sc_import\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"To Import\",\"col\":3}},{\"id\":\"epost_sc_all\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"All Letters\",\"col\":3}},{\"id\":\"epost_sc_settings\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"ePost Settings\",\"col\":3}},{\"id\":\"epost_spacer\",\"type\":\"spacer\",\"data\":{\"col\":12}},{\"id\":\"epost_card\",\"type\":\"card\",\"data\":{\"card_name\":\"ePost Connector\",\"col\":4}}]",
+ "content": "[{\"id\":\"epost_header\",\"type\":\"header\",\"data\":{\"text\":\"<span class=\\\"h4\\\"><b>ePost Letterbox</b></span>\",\"col\":12}},{\"id\":\"epost_sc_new\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"New Letters\",\"col\":3}},{\"id\":\"epost_sc_import\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"To Import\",\"col\":3}},{\"id\":\"epost_sc_errors\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Sync Errors\",\"col\":3}},{\"id\":\"epost_sc_all\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"All Letters\",\"col\":3}},{\"id\":\"epost_spacer\",\"type\":\"spacer\",\"data\":{\"col\":12}},{\"id\":\"epost_ql_import\",\"type\":\"quick_list\",\"data\":{\"quick_list_name\":\"Ready to Import\",\"col\":6}},{\"id\":\"epost_ql_syncs\",\"type\":\"quick_list\",\"data\":{\"quick_list_name\":\"Recent Syncs\",\"col\":6}},{\"id\":\"epost_spacer_2\",\"type\":\"spacer\",\"data\":{\"col\":12}},{\"id\":\"epost_card\",\"type\":\"card\",\"data\":{\"card_name\":\"ePost Connector\",\"col\":4}},{\"id\":\"epost_sc_settings\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"ePost Settings\",\"col\":3}}]",
  "creation": "2026-09-01 00:00:00.000000",
  "custom_blocks": [],
  "docstatus": 0,
@@ -63,7 +63,18 @@
  "owner": "Administrator",
  "parent_page": "",
  "public": 1,
- "quick_lists": [],
+ "quick_lists": [
+  {
+   "document_type": "ePost Letter",
+   "label": "Ready to Import",
+   "quick_list_filter": "[[\"ePost Letter\",\"status\",\"in\",[\"Downloaded\",\"Analyzed\"]]]"
+  },
+  {
+   "document_type": "ePost Sync Log",
+   "label": "Recent Syncs",
+   "quick_list_filter": "[]"
+  }
+ ],
  "roles": [],
  "sequence_id": 1.0,
  "shortcuts": [
@@ -81,6 +92,14 @@
    "label": "To Import",
    "link_to": "ePost Letter",
    "stats_filter": "{\"status\":[\"in\",[\"Downloaded\",\"Analyzed\"]]}",
+   "type": "DocType"
+  },
+  {
+   "color": "Red",
+   "doc_view": "List",
+   "label": "Sync Errors",
+   "link_to": "ePost Letter",
+   "stats_filter": "{\"sync_error\":[\"is\",\"set\"]}",
    "type": "DocType"
   },
   {

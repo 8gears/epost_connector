@@ -398,7 +398,12 @@ class ePostClient:
 			raise ePostAuthError("Token response carried no access_token", status_code=response.status_code)
 
 		now = time.time()
-		expires_in = int(payload.get("expires_in") or 300)
+
+		# `or` would read a lifetime of 0 — "this token is already dead" — as
+		# absent and grant it the five-minute default, so the client would keep
+		# using a token it was told not to. Only a missing key is a default.
+		expires_in = payload.get("expires_in")
+		expires_in = int(expires_in) if expires_in is not None else 300
 		refresh_expires_in = payload.get("refresh_expires_in")
 
 		# The spec disagrees with itself on the refresh-token key: PublicAPIToken
@@ -410,7 +415,7 @@ class ePostClient:
 			access_token=payload["access_token"],
 			expires_at=now + expires_in,
 			refresh_token=refresh_token,
-			refresh_expires_at=now + int(refresh_expires_in) if refresh_expires_in else None,
+			refresh_expires_at=now + int(refresh_expires_in) if refresh_expires_in is not None else None,
 		)
 
 	def _ensure_token(self) -> str:

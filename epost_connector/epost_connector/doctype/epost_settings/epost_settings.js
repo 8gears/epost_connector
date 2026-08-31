@@ -120,8 +120,9 @@ function watch_for_log(frm, queued_at, attempts_left) {
 				]),
 				indicator: "blue",
 			});
-			// The run writes Last Sync At/Status on this Single when it ends.
-			frm.reload_doc();
+			// The log row appears when the run starts, so Last Sync At still holds
+			// the previous run. Show the live log rather than reload stale fields.
+			show_connection_state(frm);
 			return;
 		}
 

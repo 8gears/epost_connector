@@ -155,8 +155,15 @@ jobs:
           cp -r "$GITHUB_WORKSPACE/app" apps/epost_connector
           ./env/bin/pip install -e apps/epost_connector
           # An app directory placed into apps/ by hand is not in apps.txt, and
-          # install-app fails without it.
-          grep -qx epost_connector sites/apps.txt || echo epost_connector >> sites/apps.txt
+          # install-app fails without it. Seed the file from every app actually
+          # present rather than appending: on a fresh bench sites/apps.txt does
+          # not exist, so a bare append CREATES it naming only this app, which
+          # then hides frappe and erpnext from the installer and fails with
+          # "App erpnext not in apps.txt".
+          for path in apps/*/; do
+            app=$(basename "$path")
+            grep -qx "$app" sites/apps.txt 2>/dev/null || echo "$app" >> sites/apps.txt
+          done
           bench --site "$SITE" install-app epost_connector
 
       - name: Migrate

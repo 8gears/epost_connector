@@ -166,7 +166,8 @@
   },
   {
    "collapsible": 1,
-   "description": "Filled by the configured extractor. Empty while the extractor is \"None\".",
+   "depends_on": "eval:doc.vendor_name || doc.invoice_number || doc.invoice_date || doc.due_date || doc.currency || doc.amount || doc.vat_amount",
+   "description": "Filled by the configured extractor. Hidden until one has read something off the letter.",
    "fieldname": "extraction_section",
    "fieldtype": "Section Break",
    "label": "Extraction"

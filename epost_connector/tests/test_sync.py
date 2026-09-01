@@ -154,6 +154,66 @@ class SyncCoverageTest(ePostSiteTestCase):
 		self.assertEqual(set(amounts), {0}, "an extractor now fills amount; reconsider the column")
 		self.assertEqual(set(frappe.get_all("ePost Letter", pluck="currency")), {None})
 
+	def test_a_currency_field_cannot_represent_an_amount_nobody_read(self):
+		"""The reason the fix is to hide the field rather than to blank it.
+
+		Both halves of the obvious fix are impossible, and this pins why so the
+		next person does not spend the afternoon rediscovering it: the column is
+		NOT NULL, and Frappe formats a null Currency exactly as it formats zero.
+		"""
+		from frappe.utils.formatters import format_value
+
+		doc = frappe.get_doc(
+			{"doctype": "ePost Letter", "letter_id": "probe-null-amount", "status": "New"}
+		).insert(ignore_permissions=True)
+
+		# The column is `decimal(21,9) NOT NULL DEFAULT 0`, so "no amount" cannot
+		# be stored as anything but zero.
+		with self.assertRaises(Exception):
+			frappe.db.set_value("ePost Letter", doc.name, "amount", None, update_modified=False)
+
+		# And even if it could be, it would render identically to zero anyway.
+		field = frappe.get_meta("ePost Letter").get_field("amount")
+		self.assertEqual(format_value(None, df=field), format_value(0, df=field))
+
+	def test_the_extraction_section_is_hidden_until_it_holds_something(self):
+		"""Otherwise an unread letter shows `0.00` under a site-default symbol.
+
+		Every field in the section is falsy before extraction — the Currency ones
+		read 0, which is falsy in the same way an empty Data field is — so one
+		predicate over all of them hides the section exactly when it is empty.
+		"""
+		section = frappe.get_meta("ePost Letter").get_field("extraction_section")
+		self.assertTrue(section.depends_on)
+
+		self.state.content_override.clear()
+		sync_letters()
+		doc = self.letter_doc("inbox-1")
+
+		for fieldname in (
+			"vendor_name",
+			"invoice_number",
+			"invoice_date",
+			"due_date",
+			"currency",
+			"amount",
+			"vat_amount",
+		):
+			with self.subTest(field=fieldname):
+				self.assertIn(fieldname, section.depends_on)
+				self.assertFalse(doc.get(fieldname), "a truthy value here would show the empty section")
+
+	def test_the_section_reappears_once_an_extractor_has_read_something(self):
+		self.state.content_override.clear()
+
+		with registered_extractor("Fixed", _extractor_returning_amount()):
+			sync_letters()
+
+		doc = self.letter_doc("inbox-1")
+		self.assertEqual(doc.status, "Analyzed")
+		self.assertTrue(doc.amount, "the predicate would still hide a section that now has data")
+		self.assertEqual(doc.currency, "CHF")
+
 	def test_the_amount_reads_its_symbol_from_the_currency_beside_it(self):
 		"""So when a real extractor does fill both, no separate currency column
 		is needed — which is why `currency` is not one either."""
@@ -783,6 +843,19 @@ class DatetimeParsingTest(ePostSiteTestCase):
 		for value in (TRAVERSAL, "", None, "not-a-date", "2021-13-45T99:99:99Z"):
 			with self.subTest(value=value):
 				self.assertIsNone(_parse_datetime(value))
+
+
+def _extractor_returning_amount():
+	"""An extractor that fills the two fields the hidden section turns on."""
+	from epost_connector.extraction.base import ExtractionResult, LetterExtractor
+
+	class Fixed(LetterExtractor):
+		name = "Fixed"
+
+		def extract(self, letter_doc, pdf_bytes):
+			return ExtractionResult(gross_amount=96.64, currency="CHF")
+
+	return Fixed
 
 
 def _errors_of_last_run() -> list[str]:

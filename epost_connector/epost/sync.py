@@ -13,7 +13,8 @@ from datetime import UTC, datetime
 from typing import Any
 
 import frappe
-from frappe.utils import now_datetime
+from frappe.utils import cint, now_datetime
+from frappe.utils.background_jobs import is_job_enqueued
 from frappe.utils.data import convert_utc_to_system_timezone
 
 from epost_connector.epost.client import ePostClient
@@ -40,17 +41,29 @@ def sync_letters() -> dict:
 	return LetterSync().run()
 
 
+#: One id for every sync, so Frappe's own duplicate-job check can see that a
+#: second one is the same work. A per-press random id made every enqueue unique
+#: and defeated it, which let a button press run alongside the hourly job: both
+#: read the same letter, both find no File on it, and both attach one.
+SYNC_JOB_ID = "epost-sync"
+
+
 @frappe.whitelist()
 def run_sync_now() -> dict:
 	"""Desk button: enqueue a sync so the request returns immediately."""
 	frappe.only_for(("System Manager", "Accounts Manager"))
+
+	if is_job_enqueued(SYNC_JOB_ID):
+		return {"job_id": SYNC_JOB_ID, "already_running": True}
+
 	job = frappe.enqueue(
 		"epost_connector.epost.sync.sync_letters",
 		queue="long",
 		timeout=1800,
-		job_id=f"epost-sync-{frappe.generate_hash(length=8)}",
+		job_id=SYNC_JOB_ID,
+		deduplicate=True,
 	)
-	return {"job_id": getattr(job, "id", None)}
+	return {"job_id": getattr(job, "id", None), "already_running": False}
 
 
 @frappe.whitelist()
@@ -272,16 +285,18 @@ class LetterSync:
 
 	def _metadata(self, payload: dict, folder: str) -> dict:
 		document_types = payload.get("documentTypes") or []
-		return {
-			"title": payload.get("letterTitle") or payload.get("fileName") or payload.get("id"),
-			"sender_name": self._sender_name(payload),
-			"received_at": _parse_datetime(payload.get("receivedDateTime")),
-			"document_types": ", ".join(str(t) for t in document_types) if document_types else None,
-			"epost_status": payload.get("readStatus"),
-			"letter_type": payload.get("letterType"),
-			"folder": folder,
-			"raw_metadata": frappe.as_json(payload),
-		}
+		return _clamp_to_columns(
+			{
+				"title": payload.get("letterTitle") or payload.get("fileName") or payload.get("id"),
+				"sender_name": self._sender_name(payload),
+				"received_at": _parse_datetime(payload.get("receivedDateTime")),
+				"document_types": ", ".join(str(t) for t in document_types) if document_types else None,
+				"epost_status": payload.get("readStatus"),
+				"letter_type": payload.get("letterType"),
+				"folder": folder,
+				"raw_metadata": frappe.as_json(payload),
+			}
+		)
 
 	@staticmethod
 	def _sender_name(payload: dict) -> str | None:
@@ -343,6 +358,47 @@ class LetterSync:
 		)
 		frappe.db.commit()
 		return summary
+
+
+def _clamp_to_columns(values: dict) -> dict:
+	"""Cut every varchar-backed value down to the width of its column.
+
+	Frappe raises `CharacterLengthExceededError` rather than truncating, and the
+	per-letter guard turns that into no row at all: a letter with a 141-character
+	title is not merely missing a title, it is missing from ERPNext entirely. It
+	cannot even carry its own `sync_error`, because the row that reason would be
+	written to was never created — so the only trace is one line in the Sync Log,
+	repeated every hour, forever.
+
+	Nothing is lost by cutting: the payload is stored verbatim in `raw_metadata`
+	on the same row.
+
+	The width is read the way Frappe checks it (`BaseDocument._validate_length`):
+	the field's own `length` if it has one, otherwise the default for its column
+	type. Reading it from the meta rather than hard-coding 140 keeps this correct
+	if a field is ever widened.
+	"""
+	meta = frappe.get_meta(DOCTYPE)
+	clamped = {}
+
+	for fieldname, value in values.items():
+		limit = _varchar_limit(meta.get_field(fieldname))
+		if limit and isinstance(value, str) and len(value) > limit:
+			value = value[:limit]
+		clamped[fieldname] = value
+
+	return clamped
+
+
+def _varchar_limit(field: Any) -> int:
+	"""The column width for `field`, or 0 when it is not a varchar."""
+	if not field:
+		return 0
+
+	column_type, default_length = (frappe.db.type_map.get(field.fieldtype) or (None, None))[:2]
+	if column_type != "varchar":
+		return 0
+	return cint(field.get("length")) or cint(default_length)
 
 
 def _safe_name(value: Any) -> str:

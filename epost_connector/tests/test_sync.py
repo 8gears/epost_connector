@@ -10,12 +10,21 @@ or overwrites is not a parallel-run sync.
 from __future__ import annotations
 
 import contextlib
+import inspect
 import os
+from unittest import mock
 
 import frappe
 
 from epost_connector.epost import sync as sync_module
-from epost_connector.epost.sync import LetterSync, _parse_datetime, _safe_name, reconcile, sync_letters
+from epost_connector.epost.sync import (
+	LetterSync,
+	_parse_datetime,
+	_safe_name,
+	_varchar_limit,
+	reconcile,
+	sync_letters,
+)
 from epost_connector.tests import mock_epost
 from epost_connector.tests.mock_epost import (
 	BAD_THUMBNAIL_LETTER,
@@ -109,14 +118,29 @@ class SyncCoverageTest(ePostSiteTestCase):
 		self.assertEqual(self.letter_doc("s-participant").sender_name, "participant-1")
 		self.assertEqual(self.letter_doc("s-user").sender_name, "user-1")
 
-	def test_the_list_view_shows_the_columns_the_desk_needs(self):
-		"""List columns come only from `in_list_view`; there is no client API."""
+	def test_the_list_view_spends_its_column_budget_on_the_amount(self):
+		"""List columns come only from `in_list_view`; there is no client API.
+
+		Frappe caps how many render by viewport, so this is a budget rather than
+		a wish list — `folder` and `currency` were dropped because they crowded
+		out the number invoice triage is done on.
+		"""
 		meta = frappe.get_meta("ePost Letter")
 		listed = [f.fieldname for f in meta.fields if f.in_list_view]
 
-		for field in ("title", "sender_name", "received_at", "status", "folder", "currency", "amount"):
-			with self.subTest(field=field):
-				self.assertIn(field, listed)
+		self.assertEqual(listed, ["title", "sender_name", "received_at", "status", "amount"])
+
+	def test_the_amount_column_renders_its_own_currency_symbol(self):
+		"""Which is why a separate currency column is redundant: a Currency field
+		reads its symbol from the field named in `options`."""
+		meta = frappe.get_meta("ePost Letter")
+
+		self.assertEqual(meta.get_field("amount").options, "currency")
+		self.assertEqual(meta.get_field("vat_amount").options, "currency")
+
+	def test_the_folder_is_still_reachable_as_a_filter(self):
+		"""Dropped as a column, not as a way to find things."""
+		self.assertTrue(frappe.get_meta("ePost Letter").get_field("folder").in_standard_filter)
 
 	def test_the_letter_list_sorts_on_when_the_letter_arrived(self):
 		"""v16 accepts a non-standard `sort_field`; it was flagged as a risk."""
@@ -456,6 +480,134 @@ class HostileInputTest(ePostSiteTestCase):
 		self.assertEqual(summary["status"], "Partial")
 		self.assertEqual(summary["errors"], 1)
 		self.assertIn("without an id", "\n".join(_errors_of_last_run()))
+
+
+class LongValueTest(ePostSiteTestCase):
+	"""A service string longer than its column must not cost the whole letter.
+
+	Frappe raises CharacterLengthExceededError rather than truncating, and the
+	per-letter guard turned that into no row at all — so the letter was absent
+	from ERPNext, could not carry its own `sync_error` because the row the
+	reason belongs on was never created, and was re-attempted and re-failed on
+	every hourly run.
+	"""
+
+	LONG = "Rechnung " + ("sehr lang " * 30)  # 309 characters
+
+	def setUp(self) -> None:
+		super().setUp()
+		self.state.content_override.clear()
+
+	def test_an_over_long_title_still_produces_a_complete_letter(self):
+		self.state.inbox = [letter("long-title", letterTitle=self.LONG)]
+
+		summary = sync_letters()
+
+		doc = self.letter_doc("long-title")
+		self.assertEqual(summary["status"], "Success")
+		self.assertEqual(summary["errors"], 0)
+		self.assertEqual(doc.status, "Downloaded")
+		self.assertTrue(doc.file)
+
+	def test_the_value_is_cut_to_the_width_of_its_column(self):
+		self.state.inbox = [letter("long-title", letterTitle=self.LONG)]
+
+		sync_letters()
+
+		doc = self.letter_doc("long-title")
+		limit = _varchar_limit(frappe.get_meta("ePost Letter").get_field("title"))
+		self.assertEqual(len(doc.title), limit)
+		self.assertTrue(self.LONG.startswith(doc.title))
+
+	def test_nothing_is_actually_lost_because_the_payload_is_kept_whole(self):
+		self.state.inbox = [letter("long-title", letterTitle=self.LONG)]
+
+		sync_letters()
+
+		payload = frappe.parse_json(self.letter_doc("long-title").raw_metadata)
+		self.assertEqual(payload["letterTitle"], self.LONG)
+
+	def test_an_over_long_sender_and_folder_are_cut_too(self):
+		"""Three separate Data columns, all filled from service strings."""
+		self.state.inbox = [letter("long-sender", description=self.LONG)]
+		self.state.directories = [
+			{"directoryId": "dir-long", "directoryName": self.LONG, "numberOfDocuments": 1}
+		]
+		self.state.in_folder = {"dir-long": ["arch-1"]}
+
+		summary = sync_letters()
+
+		self.assertEqual(summary["errors"], 0)
+		self.assertEqual(len(self.letter_doc("long-sender").sender_name), 140)
+		self.assertEqual(len(self.letter_doc("arch-1").folder), 140)
+
+	def test_the_limit_is_read_from_the_field_rather_than_assumed(self):
+		"""`content_sha256` declares length 64; a hard-coded 140 would miss it."""
+		meta = frappe.get_meta("ePost Letter")
+
+		self.assertEqual(_varchar_limit(meta.get_field("content_sha256")), 64)
+		self.assertEqual(_varchar_limit(meta.get_field("title")), 140)
+		# Not varchar-backed, so not clamped at all.
+		self.assertEqual(_varchar_limit(meta.get_field("raw_metadata")), 0)
+		self.assertEqual(_varchar_limit(meta.get_field("received_at")), 0)
+
+
+class ConcurrentSyncTest(ePostSiteTestCase):
+	"""Two syncs at once attach the letter's PDF twice.
+
+	`download` checks for an existing File and then creates one, which is a race
+	whenever a Desk button press overlaps the hourly job. The letter row is safe
+	— `letter_id` is the primary key — and the bytes are not duplicated on disk,
+	but the attachment list grows by one per overlap.
+	"""
+
+	def test_the_sync_job_id_is_stable_so_frappe_can_refuse_a_second_one(self):
+		"""A random id per press made every enqueue unique to Frappe."""
+		self.assertEqual(sync_module.SYNC_JOB_ID, "epost-sync")
+
+		source = inspect.getsource(sync_module.run_sync_now)
+		self.assertIn("deduplicate=True", source)
+		self.assertNotIn("generate_hash", source)
+
+	def test_a_press_while_a_sync_is_queued_does_not_queue_a_second(self):
+		with mock.patch.object(sync_module, "is_job_enqueued", return_value=True) as enqueued:
+			with mock.patch.object(frappe, "enqueue") as enqueue:
+				result = sync_module.run_sync_now()
+
+		enqueued.assert_called_once_with(sync_module.SYNC_JOB_ID)
+		enqueue.assert_not_called()
+		self.assertTrue(result["already_running"])
+
+	def test_a_press_with_nothing_queued_enqueues_under_the_shared_id(self):
+		with mock.patch.object(sync_module, "is_job_enqueued", return_value=False):
+			with mock.patch.object(frappe, "enqueue") as enqueue:
+				sync_module.run_sync_now()
+
+		self.assertEqual(enqueue.call_args.kwargs["job_id"], sync_module.SYNC_JOB_ID)
+		self.assertTrue(enqueue.call_args.kwargs["deduplicate"])
+
+	def test_a_second_download_on_a_stale_doc_still_attaches_only_once(self):
+		"""The residual race, pinned so a regression is visible.
+
+		Two workers each holding a copy of the letter from before either wrote
+		`file` both see an empty field. Frappe deduplicates the bytes, so this
+		costs an extra File row and not an extra document.
+		"""
+		self.state.content_override.clear()
+		sync_letters()
+
+		stale = frappe.get_doc("ePost Letter", {"letter_id": "inbox-1"})
+		stale.file = None
+		LetterSync().download(stale)
+
+		rows = frappe.get_all("File", filters={"attached_to_name": "inbox-1", "attached_to_field": "file"})
+		self.assertEqual(
+			len(rows),
+			2,
+			"the check-then-create race is closed; update this test and the note in "
+			"ConcurrentSyncTest's docstring",
+		)
+		self.assertEqual(len({frappe.db.get_value("File", r.name, "file_url") for r in rows}), 1)
 
 
 class SyncLogTest(ePostSiteTestCase):

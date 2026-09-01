@@ -1,0 +1,162 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+env:
+  # The app targets this pair; pyproject.toml pins the same range under
+  # [tool.bench.frappe-dependencies].
+  FRAPPE_BRANCH: version-16
+  ERPNEXT_BRANCH: version-16
+  SITE: test_site
+  # `working-directory:` does not expand `~`, so the bench path is absolute.
+  # /home/runner is the ubuntu-latest runner's home.
+  BENCH: /home/runner/frappe-bench
+
+jobs:
+  lint:
+    name: ruff
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # Pinned so a ruff release cannot turn a green branch red on its own.
+      # Bump it deliberately; the settings it reads live in pyproject.toml.
+      - run: pipx install ruff==0.14.8
+
+      - run: ruff check .
+      - run: ruff format --check .
+
+  tests:
+    name: bench run-tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    services:
+      mariadb:
+        image: mariadb:10.6
+        env:
+          MARIADB_ROOT_PASSWORD: root
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="healthcheck.sh --connect --innodb_initialized"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=30
+
+      redis:
+        image: redis:alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=30
+
+    steps:
+      - name: Check out the app
+        uses: actions/checkout@v4
+        with:
+          path: app
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: System packages
+        # libmariadb-dev builds the database driver, wkhtmltopdf is what Frappe
+        # prints with, and Frappe refuses to start without it. Neither is on the
+        # runner image.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libmariadb-dev mariadb-client wkhtmltopdf
+
+      - name: Set the server character set Frappe expects
+        # A service container's CMD cannot be overridden from a workflow, so the
+        # settings that would normally be flags on mysqld are applied at runtime.
+        run: |
+          mysql -h 127.0.0.1 -u root -proot -e "
+            SET GLOBAL character_set_server = 'utf8mb4';
+            SET GLOBAL collation_server = 'utf8mb4_unicode_ci';"
+
+      - name: Cache the pip downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-${{ env.FRAPPE_BRANCH }}-${{ hashFiles('app/pyproject.toml') }}
+          restore-keys: pip-${{ runner.os }}-${{ env.FRAPPE_BRANCH }}-
+
+      - name: Install bench
+        run: pip install frappe-bench
+
+      - name: Initialise the bench
+        # --skip-assets: this suite is Python only, and building the desk bundle
+        # is several minutes of work no test here reads.
+        run: |
+          bench init \
+            --skip-redis-config-generation \
+            --skip-assets \
+            --python "$(which python)" \
+            --frappe-branch "$FRAPPE_BRANCH" \
+            "$BENCH"
+
+      - name: Point the bench at the service containers
+        working-directory: /home/runner/frappe-bench
+        run: |
+          bench set-config -g db_host 127.0.0.1
+          bench set-config -g redis_cache "redis://127.0.0.1:6379"
+          bench set-config -g redis_queue "redis://127.0.0.1:6379"
+          bench set-config -g redis_socketio "redis://127.0.0.1:6379"
+
+      - name: Get erpnext
+        working-directory: /home/runner/frappe-bench
+        run: bench get-app --branch "$ERPNEXT_BRANCH" --skip-assets erpnext
+
+      - name: Create the test site
+        working-directory: /home/runner/frappe-bench
+        run: |
+          bench new-site "$SITE" \
+            --db-root-password root \
+            --admin-password admin \
+            --no-mariadb-socket \
+            --install-app erpnext
+          bench --site "$SITE" set-config allow_tests true
+          bench --site "$SITE" set-config developer_mode 1
+
+      - name: Install epost_connector
+        working-directory: /home/runner/frappe-bench
+        run: |
+          cp -r "$GITHUB_WORKSPACE/app" apps/epost_connector
+          ./env/bin/pip install -e apps/epost_connector
+          # An app directory placed into apps/ by hand is not in apps.txt, and
+          # install-app fails without it.
+          grep -qx epost_connector sites/apps.txt || echo epost_connector >> sites/apps.txt
+          bench --site "$SITE" install-app epost_connector
+
+      - name: Migrate
+        working-directory: /home/runner/frappe-bench
+        run: bench --site "$SITE" migrate
+
+      - name: Run the tests
+        working-directory: /home/runner/frappe-bench
+        run: bench --site "$SITE" run-tests --app epost_connector
+
+      - name: Frappe logs on failure
+        if: failure()
+        working-directory: /home/runner/frappe-bench
+        run: tail -n 300 logs/frappe.testing.log || true

@@ -151,16 +151,65 @@ letter's `Sync Error` field, and the run continues.
 
 ## Using it
 
-Open a letter to see an inline PDF preview and:
+Everything is native Desk. There is no separate frontend to build or serve.
 
-- **Download PDF** — fetches the PDF if it is missing.
-- **Analyze** — re-runs the configured extractor.
-- **Create Purchase Invoice** — opens a supplier picker, pre-filled with the
-  best-effort match, and creates a **draft** invoice.
-- **Open PDF** — opens the private file in a new tab.
+### The workspace
+
+![The ePost workspace](docs/workspace.png)
+
+Shortcuts carry live counts, so **Sync Errors** reading anything but zero is the
+one thing worth looking at on this page. **Ready to Import** lists the letters
+waiting for a human; **Recent Syncs** is the last few runs.
+
+### The letter list
+
+![The ePost Letter list](docs/list-view.png)
+
+Status is a coloured indicator: New is orange, Downloaded blue, Analyzed purple,
+Imported green, Ignored grey. A letter whose last sync failed shows a red **Sync
+Error** regardless of its status, because that is the one that needs a person.
+
+`Received At` is shown as an age; hover for the timestamp. Every row with a PDF
+gets a **PDF** button that opens the scan without leaving the list.
+
+**Quick Filters** holds the views worth having: New Letters, To Import, Sync
+Errors, Imported, Everything. The default view hides `Ignored` letters, and
+*Everything* is how you get them back. Selecting letters and choosing **Mark as
+Ignored** from the list Actions menu ignores them in bulk.
+
+### A letter
+
+![A letter with its actions](docs/form-actions.png)
+
+One primary action at a time, whichever moves this letter forward: **Download
+PDF** when there is no file yet, **Create Purchase Invoice** once there is, and
+**Open Purchase Invoice** after it has been imported. **Analyze** and **Mark as
+Ignored** live under *Actions*.
+
+`Status` is read-only on the form. Every transition is a server decision except
+*Ignored*, which is what the button is for. Ignoring is one-way: the pipeline
+refuses to move a letter back out of `Ignored`, so there is deliberately no
+un-ignore action.
+
+![The inline PDF preview](docs/form-preview.png)
+
+The PDF is embedded in the form. It is a private file served only to a session
+that may read it, so the preview is exactly as permissioned as the letter. When
+the file is missing the preview says so and offers the download instead of
+showing an empty frame.
 
 Tagging is Frappe's native `_user_tags`: the tag area on the form and the Tags
 filter in the list sidebar work with no configuration.
+
+### Settings
+
+![ePost Settings](docs/settings.png)
+
+The banner is the connection state: whether the hourly sync is on, and when the
+last run was with its outcome and counts, read from the newest `ePost Sync Log`.
+**Test Connection** authenticates and reads the unread count. **Sync Now**
+queues a run and then links to the log it opens, or tells you the job never
+started, which is what a stopped background worker looks like from the browser.
 
 ### The Purchase Invoice is a starting point
 

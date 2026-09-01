@@ -50,6 +50,12 @@ def create_purchase_invoice(letter_name: str, supplier: str | None = None) -> di
 	letter = frappe.get_doc(DOCTYPE, letter_name)
 	letter.check_permission("write")
 
+	# The invoice below is inserted with `ignore_permissions`, so the right to
+	# create one has to be established here. Without this, write access to an
+	# ePost Letter — which a custom role can be given for triage alone — carries
+	# the right to create Purchase Invoices with it.
+	frappe.has_permission("Purchase Invoice", "create", throw=True)
+
 	if letter.purchase_invoice and frappe.db.exists("Purchase Invoice", letter.purchase_invoice):
 		frappe.throw(
 			_("Letter {0} is already linked to Purchase Invoice {1}").format(
@@ -148,11 +154,14 @@ def _build_invoice(letter: Any, settings: Any, company: str, supplier: str):
 		invoice.due_date = letter.due_date
 
 	# A foreign currency needs a conversion rate that only the user can confirm,
-	# so the draft stays in company currency and records what was detected.
-	if letter.currency and letter.currency == _company_currency(company):
-		invoice.currency = letter.currency
-		invoice.conversion_rate = 1
-	elif letter.currency:
+	# so the draft is denominated in the company's currency and what was read off
+	# the letter is recorded beside it. Set unconditionally: `new_doc` fills
+	# `currency` from the site defaults, which know nothing about this company,
+	# and leaving that in place denominates the draft in a currency nobody chose
+	# — which ERPNext then refuses against a company-currency payable account.
+	invoice.currency = _company_currency(company)
+	invoice.conversion_rate = 1
+	if letter.currency and letter.currency != invoice.currency:
 		invoice.remarks += _("\nDetected currency on the letter: {0}").format(letter.currency)
 
 	invoice.append("items", _build_item(letter, settings, company))

@@ -31,7 +31,6 @@ from epost_connector.tests.mock_epost import (
 	BAD_THUMBNAIL_LETTER,
 	EMPTY_CONTENT_LETTER,
 	HTML_CONTENT_LETTER,
-	NFC_DIRECTORY_NAME,
 	TRAVERSAL,
 	TRAVERSAL_DATE_LETTER,
 	TRAVERSAL_TITLE_LETTER,
@@ -48,24 +47,10 @@ class SyncCoverageTest(ePostSiteTestCase):
 	def test_every_letter_in_the_letterbox_becomes_a_row(self):
 		summary = sync_letters()
 
-		expected = {x["id"] for x in self.state.all_letters()}
+		expected = {x["id"] for x in self.state.inbox}
 		self.assertEqual(self.letter_ids(), expected)
 		self.assertEqual(summary["letters_seen"], len(expected))
 		self.assertEqual(summary["letters_new"], len(expected))
-
-	def test_an_archived_letter_carries_the_folder_it_lives_in(self):
-		"""A letter archived on ePost leaves the inbox listing entirely.
-
-		Read from the inbox alone it would simply disappear from ERPNext, which
-		is the one failure mode a copy of a letterbox must not have.
-		"""
-		sync_letters()
-
-		self.assertEqual(self.letter_doc("inbox-1").folder, "INBOX")
-		self.assertEqual(self.letter_doc("arch-2").folder, "Storage")
-		self.assertEqual(self.letter_doc("arch-1").folder, "Rechnungen")
-		# Composed, not the decomposed form the service sent.
-		self.assertEqual(self.letter_doc("arch-3").folder, NFC_DIRECTORY_NAME)
 
 	def test_a_letter_added_between_runs_is_picked_up(self):
 		sync_letters()
@@ -128,7 +113,7 @@ class SyncCoverageTest(ePostSiteTestCase):
 		meta = frappe.get_meta("ePost Letter")
 		listed = [f.fieldname for f in meta.fields if f.in_list_view]
 
-		self.assertEqual(listed, ["title", "sender_name", "received_at", "status", "folder"])
+		self.assertEqual(listed, ["title", "sender_name", "received_at", "status", "document_types"])
 
 	def test_the_amount_column_would_be_fabricated_today(self):
 		"""Why `amount` is not a list column, and the condition for adding it.
@@ -222,8 +207,68 @@ class SyncCoverageTest(ePostSiteTestCase):
 		self.assertEqual(meta.get_field("amount").options, "currency")
 		self.assertEqual(meta.get_field("vat_amount").options, "currency")
 
-	def test_the_folder_is_reachable_as_a_filter_as_well_as_a_column(self):
-		self.assertTrue(frappe.get_meta("ePost Letter").get_field("folder").in_standard_filter)
+	def test_the_document_type_is_reachable_as_a_filter_as_well_as_a_column(self):
+		""" "Show me the invoices" is the thing this app is read for."""
+		self.assertTrue(frappe.get_meta("ePost Letter").get_field("document_types").in_standard_filter)
+
+	def test_the_folder_field_is_gone_rather_than_left_saying_inbox(self):
+		"""It recorded INBOX / Storage / an eArchive folder name.
+
+		With the eArchive sweep removed there is only one value it could ever
+		hold, so as a column it would state the same thing on every row for
+		ever — the objection that keeps `amount` out of the list as well. There
+		was no data to preserve: `ePost Letter` was empty on both benches.
+		"""
+		self.assertIsNone(frappe.get_meta("ePost Letter").get_field("folder"))
+
+	def test_the_three_live_spellings_of_invoice_become_one_filter_value(self):
+		"""The live letterbox says `Invoice`, `INVOICE` and `invoice` for one thing.
+
+		Counted on 2026-09-01 across 217 letters: 66, 30 and 23. Filtering the
+		stored string as it arrives therefore offers three buckets for the single
+		category the whole app exists to find.
+		"""
+		self.state.content_override.clear()
+		self.state.inbox = [
+			letter("c-title", documentTypes=["Invoice"]),
+			letter("c-upper", documentTypes=["INVOICE"]),
+			letter("c-lower", documentTypes=["invoice"]),
+		]
+
+		sync_letters()
+
+		stored = frappe.get_all("ePost Letter", fields=["letter_id", "document_types"])
+		self.assertEqual({row.document_types for row in stored}, {"invoice"})
+		self.assertEqual(len(frappe.get_all("ePost Letter", filters={"document_types": "invoice"})), 3)
+
+	def test_the_original_spelling_survives_in_the_raw_payload(self):
+		"""Normalising the filterable copy must not cost the evidence."""
+		self.state.content_override.clear()
+		self.state.inbox = [letter("c-upper", documentTypes=["INVOICE"])]
+
+		sync_letters()
+
+		doc = self.letter_doc("c-upper")
+		self.assertEqual(doc.document_types, "invoice")
+		self.assertEqual(frappe.parse_json(doc.raw_metadata)["documentTypes"], ["INVOICE"])
+
+	def test_several_types_stay_several_and_a_repeat_of_one_does_not(self):
+		"""Case-folding only. Two categories stay two; one said twice is one."""
+		self.state.content_override.clear()
+		self.state.inbox = [
+			letter("c-many", documentTypes=["Invoice", "CONTRACT"]),
+			letter("c-repeat", documentTypes=["Invoice", "invoice"]),
+			letter("c-none", documentTypes=[]),
+			letter("c-unknown", documentTypes=["Betreibungsregisterauszug"]),
+		]
+
+		sync_letters()
+
+		self.assertEqual(self.letter_doc("c-many").document_types, "invoice, contract")
+		self.assertEqual(self.letter_doc("c-repeat").document_types, "invoice")
+		self.assertIsNone(self.letter_doc("c-none").document_types)
+		# Nothing is mapped onto a taxonomy this app invented; it is only folded.
+		self.assertEqual(self.letter_doc("c-unknown").document_types, "betreibungsregisterauszug")
 
 	def test_the_letter_list_sorts_on_when_the_letter_arrived(self):
 		"""v16 accepts a non-standard `sort_field`; it was flagged as a risk."""
@@ -371,7 +416,7 @@ class BadContentTest(ePostSiteTestCase):
 	def test_one_bad_letter_costs_exactly_one_letter(self):
 		summary = sync_letters()
 
-		good = {x["id"] for x in self.state.all_letters()} - UNDOWNLOADABLE
+		good = {x["id"] for x in self.state.inbox} - UNDOWNLOADABLE
 		self.assertEqual(summary["files_downloaded"], len(good))
 		for letter_id in good:
 			self.assertEqual(self.letter_doc(letter_id).status, "Downloaded")
@@ -434,7 +479,7 @@ class AttachmentMechanicsTest(ePostSiteTestCase):
 		summary = sync_letters()
 
 		self.assertEqual(summary["status"], "Success")
-		self.assertEqual(summary["files_downloaded"], len(self.state.all_letters()))
+		self.assertEqual(summary["files_downloaded"], len(self.state.inbox))
 
 	def test_the_pdf_and_the_thumbnail_are_both_attached_to_the_letter(self):
 		self.state.content_override.clear()
@@ -501,7 +546,7 @@ class ThumbnailTest(ePostSiteTestCase):
 		doc = self.letter_doc("inbox-1")
 		self.assertEqual(doc.status, "Downloaded")
 		self.assertTrue(doc.file)
-		self.assertEqual(summary["files_downloaded"], len(self.state.all_letters()))
+		self.assertEqual(summary["files_downloaded"], len(self.state.inbox))
 		self.assertEqual(summary["status"], "Partial")
 
 
@@ -559,7 +604,7 @@ class HostileInputTest(ePostSiteTestCase):
 
 		summary = sync_letters()
 
-		self.assertEqual(self.letter_ids(), {"inbox-1", "arch-1", "arch-2", "arch-3"})
+		self.assertEqual(self.letter_ids(), {"inbox-1"})
 		self.assertEqual(summary["status"], "Partial")
 		self.assertEqual(summary["errors"], 1)
 		self.assertIn("without an id", "\n".join(_errors_of_last_run()))
@@ -610,19 +655,14 @@ class LongValueTest(ePostSiteTestCase):
 		payload = frappe.parse_json(self.letter_doc("long-title").raw_metadata)
 		self.assertEqual(payload["letterTitle"], self.LONG)
 
-	def test_an_over_long_sender_and_folder_are_cut_too(self):
-		"""Three separate Data columns, all filled from service strings."""
+	def test_an_over_long_sender_is_cut_too(self):
+		"""Not only the title: every Data column is filled from a service string."""
 		self.state.inbox = [letter("long-sender", description=self.LONG)]
-		self.state.directories = [
-			{"directoryId": "dir-long", "directoryName": self.LONG, "numberOfDocuments": 1}
-		]
-		self.state.in_folder = {"dir-long": ["arch-1"]}
 
 		summary = sync_letters()
 
 		self.assertEqual(summary["errors"], 0)
 		self.assertEqual(len(self.letter_doc("long-sender").sender_name), 140)
-		self.assertEqual(len(self.letter_doc("arch-1").folder), 140)
 
 	def test_the_limit_is_read_from_the_field_rather_than_assumed(self):
 		"""`content_sha256` declares length 64; a hard-coded 140 would miss it."""
@@ -700,7 +740,7 @@ class SyncLogTest(ePostSiteTestCase):
 		logs = frappe.get_all("ePost Sync Log", fields=["name", "status", "letters_seen", "errors"])
 		self.assertEqual(len(logs), 1)
 		self.assertEqual(logs[0].status, "Partial")
-		self.assertEqual(logs[0].letters_seen, len(self.state.all_letters()))
+		self.assertEqual(logs[0].letters_seen, len(self.state.inbox))
 		self.assertTrue(logs[0].errors)
 
 	def test_two_runs_write_two_log_rows(self):
@@ -718,7 +758,7 @@ class SyncLogTest(ePostSiteTestCase):
 		log = frappe.get_all("ePost Sync Log", fields=["status", "errors", "files_downloaded"])[0]
 		self.assertEqual(log.status, "Success")
 		self.assertIsNone(log.errors)
-		self.assertEqual(log.files_downloaded, len(self.state.all_letters()))
+		self.assertEqual(log.files_downloaded, len(self.state.inbox))
 
 	def test_the_settings_record_when_the_last_run_finished(self):
 		sync_letters()
@@ -749,7 +789,6 @@ class CredentialRedactionTest(ePostSiteTestCase):
 	def test_an_echoed_api_key_reaches_none_of_the_places_a_run_writes_to(self):
 		self.configure_settings(api_key=mock_epost.API_KEY, username=None, password=None)
 		self.state.inbox = [letter(mock_epost.ECHO_SECRET_LETTER)]
-		self.state.archive = []
 
 		summary = LetterSync().run()
 
@@ -783,8 +822,8 @@ class ReconcileTest(ePostSiteTestCase):
 		result = reconcile()
 
 		self.assertTrue(result["in_sync"], result)
-		self.assertEqual(result["epost_letters"], len(self.state.all_letters()))
-		self.assertEqual(result["erpnext_letters"], len(self.state.all_letters()))
+		self.assertEqual(result["epost_letters"], len(self.state.inbox))
+		self.assertEqual(result["erpnext_letters"], len(self.state.inbox))
 		self.assertEqual(result["missing_in_erpnext_count"], 0)
 		self.assertEqual(result["extra_in_erpnext_count"], 0)
 
@@ -825,11 +864,15 @@ class ReconcileTest(ePostSiteTestCase):
 		"""`frappe.get_all` returning only the first 20 rows would fake a match."""
 		self.state.inbox = [letter(f"p-{i}") for i in range(40)]
 		self.state.content_override.clear()
+		# The count is read off the fixture rather than written out, so it cannot
+		# go stale — but it is worthless unless it exceeds the default page
+		# length this test exists to catch.
+		self.assertGreater(len(self.state.inbox), 20)
 		sync_letters()
 
 		result = reconcile()
 
-		self.assertEqual(result["erpnext_letters"], 43)
+		self.assertEqual(result["erpnext_letters"], len(self.state.inbox))
 		self.assertTrue(result["in_sync"], result)
 
 
@@ -845,7 +888,7 @@ class ScheduledSyncTest(ePostSiteTestCase):
 		summary = sync_module.scheduled_sync()
 
 		self.assertIsNotNone(summary)
-		self.assertEqual(summary["letters_seen"], len(self.state.all_letters()))
+		self.assertEqual(summary["letters_seen"], len(self.state.inbox))
 
 	def test_the_hook_registers_the_entry_point_that_exists(self):
 		hooks = frappe.get_hooks("scheduler_events", app_name="epost_connector")

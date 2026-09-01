@@ -34,7 +34,7 @@ rather than duplicating.
 
 ```
 ePost API (api.epost.ch)
-	│  GET only — inbox listing AND the eArchive folders
+	│  GET only — the inbox listing
 	▼
 epost/client.py ......... auth (X-API-KEY, or password + refresh grant),
 	│                     pagination, retries, PDF validation,
@@ -56,21 +56,20 @@ Pipeline status on `ePost Letter`, which only ever moves forward:
 `Imported` and `Ignored` are terminal. The sync still refreshes their ePost
 metadata but never touches their pipeline state, supplier, or extraction fields.
 
-### The sync covers the inbox *and* the archive
+### The sync reads the inbox, and the inbox is the whole letterbox
 
-The inbox listing is not the whole letterbox. A letter archived by a user, or by
-the n8n workflow, leaves the inbox listing entirely, and an inbox-only sync would
-quietly drop it from ERPNext. So each run reads:
+One endpoint per run: `GET /epost/v2/letters`, paged to exhaustion.
 
-1. `GET /epost/v2/letters` — the inbox,
-2. `GET /epost/v2/archives/letters` — Storage root,
-3. `GET /epost/v2/archives/letters?directory-id=…` for every folder from
-   `GET /epost/v2/archives/directories`.
+There is no eArchive sweep. There was one, reading the Storage root and every
+`GET /epost/v2/archives/directories` folder by id, and on this account it found
+nothing at all. Surveyed live on 2026-09-01: all 217 letters are in the inbox,
+the three real folders (`2021`, `Eingangsrechnungen 2021`, `Kreditoren`) hold
+zero documents each, `GET /epost/v2/archives/letters` with no `directory-id`
+answers with an empty array, and the only two directories reporting documents
+(`ePost Scancenter` 187, `ePost Service AG` 30 — exactly the 217) have an empty
+`directoryId` and so cannot be listed by id at all.
 
-Results are deduplicated on letter id, and where the letter was found is written
-to the `ePost Folder` field (`INBOX`, `Storage`, or the folder name). Folder
-names are NFC-normalised, because the service can return them decomposed and the
-same folder would otherwise read as two different strings.
+Putting it back needs new evidence from the account, not a reading of the spec.
 
 ### Two facts the spec gets wrong, and how the client handles them
 
@@ -185,10 +184,11 @@ Status is a coloured indicator: New is orange, Downloaded blue, Analyzed purple,
 Imported green, Ignored grey. A letter whose last sync failed shows a red **Sync
 Error** regardless of its status, because that is the one that needs a person.
 
-`Received At` is shown as an age; hover for the timestamp. `ePost Folder` says
-where the letter lives on ePost, which is the one extra fact the sync always
-observes for every letter. Every row with a PDF gets a **PDF** button that opens
-the scan without leaving the list.
+`Received At` is shown as an age; hover for the timestamp. `Document Types`
+carries the categories ePost put on the letter, lower-cased so that `Invoice`,
+`INVOICE` and `invoice` are one value and one filter — it is a standard filter,
+so "show me the invoices" is one click. Every row with a PDF gets a **PDF**
+button that opens the scan without leaving the list.
 
 There is deliberately **no `Amount` column**. The only extractor this app ships
 is the no-op (see *Extraction* below), so in the shipped configuration every
@@ -306,8 +306,8 @@ Prints JSON:
 }
 ```
 
-It counts the same ground the sync covers, inbox and archive together, so an
-archived letter is not reported as missing.
+It counts the same ground the sync covers — the inbox — so the two numbers are
+comparable by construction.
 
 `missing_in_erpnext` is the id set present in ePost but not here — run a sync.
 `extra_in_erpnext` is present here but no longer in ePost, which normally means

@@ -17,7 +17,7 @@ from typing import ClassVar
 
 import requests
 
-from epost_connector.epost.client import INBOX_FOLDER, STORAGE_ROOT, ePostClient
+from epost_connector.epost.client import ePostClient
 from epost_connector.epost.exceptions import (
 	ePostAPIError,
 	ePostAuthError,
@@ -32,7 +32,6 @@ from epost_connector.tests.mock_epost import (
 	COMPANY_ID,
 	EMPTY_CONTENT_LETTER,
 	HTML_CONTENT_LETTER,
-	NFC_DIRECTORY_NAME,
 	REFRESHED_ACCESS_TOKEN,
 	TENANT_ID,
 	WRONG_API_KEY,
@@ -202,7 +201,7 @@ class ApiKeyAuthTest(MockServerTestCase):
 		"""The grant is the thing 2FA refuses; a key-only run must not attempt it."""
 		client = self.key_client()
 		client.authenticate()
-		list(client.iter_all_letters())
+		list(client.iter_letters())
 
 		self.assertEqual([c for c in self.state.calls if c[1].startswith("/core/latest/")], [])
 
@@ -474,48 +473,6 @@ class PaginationTest(MockServerTestCase):
 		self.assertEqual(query["limit"], [str(ePostClient.MAX_PAGE_SIZE)])
 
 
-class ArchiveCoverageTest(MockServerTestCase):
-	def test_inbox_root_storage_and_folders_are_all_covered(self):
-		client = self.client()
-		found = {payload["id"]: folder for payload, folder in client.iter_all_letters()}
-
-		for payload in self.state.inbox:
-			self.assertEqual(found[payload["id"]], INBOX_FOLDER)
-		# spec:11370 — a directory-less archive listing is root storage only,
-		# so a filed letter is reachable only through its folder.
-		self.assertEqual(found["arch-2"], STORAGE_ROOT)
-		self.assertEqual(found["arch-1"], "Rechnungen")
-
-	def test_a_decomposed_folder_name_is_normalised_to_one_string(self):
-		client = self.client()
-		found = {payload["id"]: folder for payload, folder in client.iter_all_letters()}
-
-		folder = found["arch-3"]
-		self.assertEqual(folder, NFC_DIRECTORY_NAME)
-		# The bytes differ even though the two strings look identical on screen;
-		# without normalisation ERPNext would hold two folders called "Bürö".
-		self.assertNotEqual(folder, mock_epost.NFD_DIRECTORY_NAME)
-
-	def test_the_branded_directory_without_an_id_is_never_listed_by_id(self):
-		"""spec:15291 — its id is empty, and its documents are in root storage."""
-		client = self.client()
-		list(client.iter_all_letters())
-
-		by_id = [
-			q["directory-id"][0]
-			for _m, _p, q in self.state.calls_to("/epost/v2/archives/letters")
-			if q.get("directory-id")
-		]
-		self.assertEqual(sorted(set(by_id)), ["dir-one", "dir-two"])
-
-	def test_a_letter_in_both_the_inbox_and_the_archive_is_yielded_once(self):
-		self.state.archive.append(letter("inbox-1"))
-		client = self.client()
-
-		ids = [payload["id"] for payload, _folder in client.iter_all_letters()]
-		self.assertEqual(ids.count("inbox-1"), 1)
-
-
 class ContentValidationTest(MockServerTestCase):
 	def test_a_pdf_comes_back_whole(self):
 		client = self.client()
@@ -704,10 +661,7 @@ class ReadOnlySurfaceTest(MockServerTestCase):
 			"get_letter_content",
 			"get_letter_thumbnail",
 			"get_unread_count",
-			"iter_all_letters",
 			"iter_letters",
-			"list_archive_letters",
-			"list_directories",
 			"list_letters",
 			"list_tenants",
 			"search_letters",

@@ -15,7 +15,7 @@ import json
 import unittest
 
 from epost_connector.epost import client as client_module
-from epost_connector.epost.client import INBOX_FOLDER, STORAGE_ROOT, ePostClient
+from epost_connector.epost.client import ePostClient
 from epost_connector.epost.exceptions import (
 	ePostContentError,
 	ePostPaginationLimit,
@@ -63,10 +63,6 @@ class StubSession:
 			params = kwargs["params"]
 			start, limit = params["offset"], params["limit"]
 			return StubResponse(200, self.letters[start : start + limit], url=url)
-		if url.endswith("/epost/v2/archives/directories"):
-			return StubResponse(200, [], url=url)
-		if url.endswith("/epost/v2/archives/letters"):
-			return StubResponse(200, [], url=url)
 		return StubResponse(404, {"message": "unexpected", "code": "X"}, url=url)
 
 
@@ -253,54 +249,6 @@ class RedactionTest(unittest.TestCase):
 
 		self.assertNotIn(password, str(caught.exception))
 		self.assertIn("[redacted]", str(caught.exception))
-
-
-class ArchiveCoverageTest(unittest.TestCase):
-	"""A letter archived on ePost must not vanish from ERPNext."""
-
-	def test_inbox_and_archive_are_both_listed_and_deduplicated(self):
-		class ArchiveSession(StubSession):
-			def request(self, method, url, headers=None, timeout=None, **kwargs):
-				if url.endswith("/epost/v2/letters"):
-					return StubResponse(200, [{"id": "1"}, {"id": "2"}], url=url)
-				if url.endswith("/epost/v2/archives/directories"):
-					return StubResponse(
-						200,
-						[
-							{"directoryId": "", "directoryName": "ePost Scancenter"},
-							{"directoryId": "d1", "directoryName": "Rechnungen"},
-						],
-						url=url,
-					)
-				if url.endswith("/epost/v2/archives/letters"):
-					if kwargs["params"].get("directory-id") == "d1":
-						return StubResponse(200, [{"id": "4"}, {"id": "2"}], url=url)
-					return StubResponse(200, [{"id": "3"}], url=url)
-				return super().request(method, url, headers=headers, timeout=timeout, **kwargs)
-
-		client = ePostClient("user@example.com", "pw", session=ArchiveSession())
-		found = {letter["id"]: folder for letter, folder in client.iter_all_letters()}
-
-		self.assertEqual(found, {"1": INBOX_FOLDER, "2": INBOX_FOLDER, "3": STORAGE_ROOT, "4": "Rechnungen"})
-
-	def test_a_decomposed_folder_name_is_normalised(self):
-		class NfdSession(StubSession):
-			def request(self, method, url, headers=None, timeout=None, **kwargs):
-				if url.endswith("/epost/v2/letters"):
-					return StubResponse(200, [], url=url)
-				if url.endswith("/epost/v2/archives/directories"):
-					# "Bürö" written decomposed: u + combining diaeresis.
-					return StubResponse(200, [{"directoryId": "d1", "directoryName": "Bürö"}], url=url)
-				if url.endswith("/epost/v2/archives/letters"):
-					if kwargs["params"].get("directory-id") == "d1":
-						return StubResponse(200, [{"id": "9"}], url=url)
-					return StubResponse(200, [], url=url)
-				return super().request(method, url, headers=headers, timeout=timeout, **kwargs)
-
-		client = ePostClient("user@example.com", "pw", session=NfdSession())
-		folders = [folder for _letter, folder in client.iter_all_letters()]
-
-		self.assertEqual(folders, ["Bürö"])
 
 
 class AuthTest(unittest.TestCase):

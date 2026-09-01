@@ -14,6 +14,16 @@ archived from here would change what that workflow sees. So:
 
 which leaves POST available only for the two /core/latest/ auth endpoints.
 
+SCOPE — the inbox is the whole letterbox. There is no eArchive support here, and
+adding it back needs new evidence rather than the spec: surveyed live on
+2026-09-01, all 217 letters are in the inbox, the three real archive folders
+(`2021`, `Eingangsrechnungen 2021`, `Kreditoren`) hold zero documents each, and
+`GET /epost/v2/archives/letters` without a `directory-id` answers with an empty
+array. The two directories that do report documents (`ePost Scancenter` 187,
+`ePost Service AG` 30 — exactly the 217) have an EMPTY `directoryId`, so they
+cannot be listed by id at all. The sweep that used to be here therefore read
+three endpoints to find nothing.
+
 AUTHENTICATION — spec:20263-20271 documents two independent security schemes,
 `apiKeyAuth` (an `X-API-KEY` header) and `bearerAuth` (the password grant), and
 every letterbox operation accepts either. So an API key on its own is a complete
@@ -30,7 +40,6 @@ from __future__ import annotations
 
 import contextlib
 import time
-import unicodedata
 from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any
@@ -52,12 +61,6 @@ DEFAULT_BASE_URL = "https://api.epost.ch"
 TENANTS_PATH = "/core/latest/tenants"
 TOKEN_PATH = "/core/latest/token"
 LETTERS_PATH = "/epost/v2/letters"
-DIRECTORIES_PATH = "/epost/v2/archives/directories"
-ARCHIVE_LETTERS_PATH = "/epost/v2/archives/letters"
-
-#: Folder labels written onto `ePost Letter.folder`.
-INBOX_FOLDER = "INBOX"
-STORAGE_ROOT = "Storage"
 
 
 @dataclass
@@ -208,77 +211,6 @@ class ePostClient:
 			page_size,
 			what="inbox letters",
 		)
-
-	def list_directories(self) -> list[dict]:
-		"""eArchive folders. spec:11339-11347 — array of `Directory`.
-
-		spec:15291 — `directoryId` is empty for the branded pseudo-directory,
-		which is why callers must not assume the id is truthy.
-		"""
-		return self._get_list(DIRECTORIES_PATH, params={})
-
-	def list_archive_letters(
-		self,
-		*,
-		directory_id: str | None = None,
-		limit: int | None = None,
-		offset: int = 0,
-	) -> list[dict]:
-		"""spec:11404-11412 — archived letters, same bare `Letter` array."""
-		params: dict[str, Any] = {"limit": min(limit or self.page_size, self.MAX_PAGE_SIZE), "offset": offset}
-		if directory_id:
-			params["directory-id"] = directory_id
-		return self._get_list(ARCHIVE_LETTERS_PATH, params=params)
-
-	def iter_all_letters(self) -> Iterator[tuple[dict, str]]:
-		"""Every letter the account can see, with the folder it lives in.
-
-		The inbox alone is not the whole letterbox: a letter archived by a user
-		or by the n8n workflow leaves the inbox listing entirely and would
-		otherwise disappear from ERPNext. Yields `(letter, folder)`, deduplicated
-		on letter id with the first folder seen winning.
-		"""
-		seen: set[str] = set()
-
-		def emit(payload: dict, folder: str) -> Iterator[tuple[dict, str]]:
-			letter_id = str(payload.get("id") or "")
-			if not letter_id:
-				# Nothing can be stored under no id, but swallowing it here would
-				# lose a letter and still report a clean run. It is passed on so
-				# the caller records it; the sync has a branch for exactly this.
-				yield payload, folder
-			elif letter_id not in seen:
-				seen.add(letter_id)
-				yield payload, folder
-
-		for payload in self.iter_letters():
-			yield from emit(payload, INBOX_FOLDER)
-
-		for payload in self._paginate(
-			lambda limit, offset: self.list_archive_letters(limit=limit, offset=offset),
-			self.page_size,
-			what="archived letters",
-		):
-			yield from emit(payload, STORAGE_ROOT)
-
-		for directory in self.list_directories():
-			directory_id = directory.get("directoryId")
-			if not directory_id:
-				# The branded pseudo-directory has no id; its documents come back
-				# in the root listing above.
-				continue
-
-			# Folder names can arrive decomposed (NFD); normalise so the same
-			# folder does not read as two different strings in ERPNext.
-			folder = unicodedata.normalize("NFC", str(directory.get("directoryName") or directory_id))
-			for payload in self._paginate(
-				lambda limit, offset, d=directory_id: self.list_archive_letters(
-					directory_id=d, limit=limit, offset=offset
-				),
-				self.page_size,
-				what=f"letters in {folder}",
-			):
-				yield from emit(payload, folder)
 
 	def get_letter(self, letter_id: str) -> dict:
 		"""spec:12030-12035 — returns a single `Letter` object."""

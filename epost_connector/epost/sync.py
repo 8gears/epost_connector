@@ -37,7 +37,7 @@ def scheduled_sync() -> dict | None:
 
 
 def sync_letters() -> dict:
-	"""Pull every letter, inbox and archive, download PDFs, run extraction."""
+	"""Pull every inbox letter, download PDFs, run extraction."""
 	return LetterSync().run()
 
 
@@ -97,7 +97,7 @@ def reconcile() -> dict:
 	truncated = None
 
 	try:
-		for payload, _folder in client.iter_all_letters():
+		for payload in client.iter_letters():
 			if payload.get("id"):
 				remote_ids.add(str(payload["id"]))
 	except ePostPaginationLimit as exc:
@@ -137,9 +137,9 @@ class LetterSync:
 	def run(self) -> dict:
 		log = self._start_log()
 		try:
-			for payload, folder in self.client.iter_all_letters():
+			for payload in self.client.iter_letters():
 				self.seen += 1
-				self._sync_one(payload, folder)
+				self._sync_one(payload)
 		except ePostPaginationLimit as exc:
 			# The letters inside the window were still synced, so this is a
 			# partial run with a known ceiling, not a failure.
@@ -155,7 +155,7 @@ class LetterSync:
 
 		return self._finish(log, "Partial" if self.errors else "Success")
 
-	def _sync_one(self, payload: dict, folder: str) -> None:
+	def _sync_one(self, payload: dict) -> None:
 		letter_id = str(payload.get("id") or "").strip()
 		if not letter_id:
 			self.errors.append(f"Letter without an id skipped: {frappe.as_json(payload)[:200]}")
@@ -166,7 +166,7 @@ class LetterSync:
 		# with the reason on it, and a downloaded PDF is worth keeping even when
 		# the extractor that ran next threw — sharing one savepoint would roll
 		# the download back and the next run would repeat it, forever.
-		ok, letter = self._guarded(letter_id, lambda: self._upsert(letter_id, payload, folder))
+		ok, letter = self._guarded(letter_id, lambda: self._upsert(letter_id, payload))
 		if not ok or letter.status in TERMINAL_STATUSES:
 			return
 
@@ -195,8 +195,8 @@ class LetterSync:
 			self._record_letter_error(letter_id, exc)
 			return False, None
 
-	def _upsert(self, letter_id: str, payload: dict, folder: str):
-		values = self._metadata(payload, folder)
+	def _upsert(self, letter_id: str, payload: dict):
+		values = self._metadata(payload)
 		name = frappe.db.get_value(DOCTYPE, {"letter_id": letter_id}, "name")
 
 		if not name:
@@ -300,17 +300,15 @@ class LetterSync:
 		if STATUS_RANK.get(status, 0) > STATUS_RANK.get(letter.status, 0):
 			letter.status = status
 
-	def _metadata(self, payload: dict, folder: str) -> dict:
-		document_types = payload.get("documentTypes") or []
+	def _metadata(self, payload: dict) -> dict:
 		return _clamp_to_columns(
 			{
 				"title": payload.get("letterTitle") or payload.get("fileName") or payload.get("id"),
 				"sender_name": self._sender_name(payload),
 				"received_at": _parse_datetime(payload.get("receivedDateTime")),
-				"document_types": ", ".join(str(t) for t in document_types) if document_types else None,
+				"document_types": _document_types(payload),
 				"epost_status": payload.get("readStatus"),
 				"letter_type": payload.get("letterType"),
-				"folder": folder,
 				"raw_metadata": frappe.as_json(payload),
 			}
 		)
@@ -416,6 +414,28 @@ def _varchar_limit(field: Any) -> int:
 	if column_type != "varchar":
 		return 0
 	return cint(field.get("length")) or cint(default_length)
+
+
+def _document_types(payload: dict) -> str | None:
+	"""The letter's categories, case-folded so one concept is one filter value.
+
+	The live letterbox spells the same category three ways — across 217 letters
+	on 2026-09-01, `Invoice` 66, `INVOICE` 30, `invoice` 23 — so filtering the
+	stored string offers three buckets for what is one thing, and the field
+	exists to be filtered on. Lowercasing merges them.
+
+	Only the case is touched. Nothing is mapped onto a taxonomy this app made up:
+	an unrecognised type survives as itself, and `raw_metadata` on the same row
+	keeps the payload with its original spelling. The de-duplication is the same
+	rule applied twice over — once folded, `["Invoice", "invoice"]` is one value
+	said twice, not two categories.
+	"""
+	seen: dict[str, None] = {}
+	for value in payload.get("documentTypes") or []:
+		folded = str(value).strip().lower()
+		if folded:
+			seen.setdefault(folded)
+	return ", ".join(seen) or None
 
 
 def _safe_name(value: Any) -> str:

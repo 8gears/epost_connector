@@ -8,18 +8,18 @@ awkward ones:
 	inferred from a short page;
   * `letter-types` is a *required* query parameter (spec:11622) — omitting it is
 	a 400 here, as it is there;
-  * `/epost/v2/archives/letters` without `directory-id` lists the **root
-	storage only** (spec:11370-11375), not every archived letter, so a letter
-	filed into a folder is reachable only through that folder's listing;
-  * `directoryId` is empty for the branded pseudo-directory (spec:15291);
   * `/epost/v2/letters/inbox/count` answers with a bare integer (spec:11815).
+
+There are no eArchive routes, because the app has no eArchive code to exercise:
+the live account keeps all 217 of its letters in the inbox and its archive
+folders are empty.
 
 It also ships the answers a happy mock never produces, because every one of them
 has been seen from a real gateway and each is indistinguishable from success
 until the body is inspected: a content endpoint answering 200 with an HTML error
 page, the same endpoint answering 200 with nothing at all, a service that
-ignores `offset` and re-serves the first window forever, a folder name that
-arrives NFD-decomposed, and a field whose value is shaped like a filesystem path.
+ignores `offset` and re-serves the first window forever, and a field whose value
+is shaped like a filesystem path.
 
 Both documented security schemes are honoured (spec:20263-20271): a bearer token
 from the password grant, and an `X-API-KEY` header that authenticates on its own.
@@ -41,7 +41,6 @@ from __future__ import annotations
 import base64
 import json
 import threading
-import unicodedata
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -75,10 +74,6 @@ COMPANY_NAME = "8gears AG"
 DEFAULT_LIMIT = 48
 MAX_LIMIT = 1000
 
-#: Written decomposed (u + combining diaeresis) exactly as the service sends it.
-NFD_DIRECTORY_NAME = unicodedata.normalize("NFD", "Bürö")
-NFC_DIRECTORY_NAME = unicodedata.normalize("NFC", "Bürö")
-
 #: A value shaped like a path. The app builds a stored file name out of service
 #: strings, so a service that says this must not get to decide where a file lands.
 TRAVERSAL = "../../../../tmp/pwned"
@@ -109,29 +104,6 @@ JPEG_1X1 = base64.b64decode(
 #: Frappe's File insert, which is why it is a fixture and not a unit test.
 HTML_ERROR_PAGE = b"<html><body><h1>502 Bad Gateway</h1></body></html>\n"
 
-DIRECTORIES = [
-	{
-		"directoryId": "dir-one",
-		"directoryName": "Rechnungen",
-		"numberOfDocuments": 1,
-		"hasSubDirectories": False,
-	},
-	{
-		"directoryId": "dir-two",
-		"directoryName": NFD_DIRECTORY_NAME,
-		"numberOfDocuments": 1,
-		"hasSubDirectories": False,
-	},
-	# spec:15291 — the branded directory has no id. Its documents come back in
-	# the root listing, so a client must skip it rather than list it by id.
-	{
-		"directoryId": "",
-		"directoryName": "ePost Scancenter",
-		"numberOfDocuments": 0,
-		"hasSubDirectories": False,
-	},
-]
-
 AUTH_PATHS = ("/core/latest/tenants", "/core/latest/token")
 
 
@@ -148,7 +120,10 @@ def letter(letter_id: str, **over: Any) -> dict:
 		"fileName": f"{letter_id}.pdf",
 		"senderParticipantId": "b0f742a3-0a54-401d-bf41-38a3a9628953",
 		"senderUserId": "84332810",
-		"documentTypes": ["invoice"],
+		# Capitalised, because that is the spelling the live letterbox uses most
+		# (66 of the 119 invoices on 2026-09-01). A fixture that only ever sent
+		# the already-normalised form would let a broken normaliser pass.
+		"documentTypes": ["Invoice"],
 		"letterContentReference": f"https://api.epost.ch/epost/v2/letters/{letter_id}/content",
 		"letterType": "CLASSIC_LETTER",
 		"receivedDateTime": "2021-09-29T04:21:10.163Z",
@@ -236,32 +211,17 @@ def default_thumbnail_override() -> dict[str, tuple[bytes, str]]:
 	return {BAD_THUMBNAIL_LETTER: (HTML_ERROR_PAGE, "text/html")}
 
 
-def default_archive() -> list[dict]:
-	return [
-		letter("arch-1", letterTitle="Rechnung 2024-01"),
-		letter("arch-2", letterTitle="Unfiled", description=None),
-		letter("arch-3", letterTitle="Ordner mit Umlaut"),
-	]
-
-
 @dataclass
 class MockState:
 	"""Everything a test can bend, and everything the server recorded."""
 
 	inbox: list[dict] = field(default_factory=default_inbox)
-	archive: list[dict] = field(default_factory=default_archive)
 	#: A token is only ever valid for one tenant/company pair, so an account
 	#: with more than one of them cannot be resolved without being told which.
 	tenants: list[dict] = field(
 		default_factory=lambda: [
 			{"tenant_id": TENANT_ID, "company_id": COMPANY_ID, "company_name": COMPANY_NAME}
 		]
-	)
-	directories: list[dict] = field(default_factory=lambda: [dict(d) for d in DIRECTORIES])
-	#: directory id -> letter ids filed into it. Anything not listed here sits in
-	#: root storage and is only reachable through the directory-less listing.
-	in_folder: dict[str, list[str]] = field(
-		default_factory=lambda: {"dir-one": ["arch-1"], "dir-two": ["arch-3"]}
 	)
 
 	#: `(method, path, query)` for every request, in order.
@@ -335,17 +295,6 @@ class MockState:
 			return self.thumbnail_override[letter_id]
 		# spec:12308 — a JPEG byte stream, 90x128 by default.
 		return (JPEG_1X1, "image/jpeg")
-
-	def all_letters(self) -> list[dict]:
-		return [*self.inbox, *self.archive]
-
-	def root_storage(self) -> list[dict]:
-		filed = {i for ids in self.in_folder.values() for i in ids}
-		return [letter_ for letter_ in self.archive if letter_.get("id") not in filed]
-
-	def in_directory(self, directory_id: str) -> list[dict]:
-		ids = self.in_folder.get(directory_id, [])
-		return [letter_ for letter_ in self.archive if letter_.get("id") in ids]
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -548,18 +497,8 @@ class _Handler(BaseHTTPRequestHandler):
 
 		if path == "/epost/v2/letters/search":
 			needle = (query.get("value") or query.get("keyword") or [""])[0].lower()
-			hits = [x for x in state.all_letters() if needle in json.dumps(x).lower()]
+			hits = [x for x in state.inbox if needle in json.dumps(x).lower()]
 			self._send(200, self._listing(hits, query))
-			return
-
-		if path == "/epost/v2/archives/directories":
-			self._send(200, state.directories)
-			return
-
-		if path == "/epost/v2/archives/letters":
-			directory_id = (query.get("directory-id") or [""])[0]
-			pool = state.in_directory(directory_id) if directory_id else state.root_storage()
-			self._send(200, self._listing(pool, query))
 			return
 
 		if path.startswith("/epost/v2/letters/"):
@@ -589,7 +528,7 @@ class _Handler(BaseHTTPRequestHandler):
 			return
 
 		# `.get`, because a fixture may deliberately be a letter with no id at all.
-		known = next((x for x in self.state.all_letters() if x.get("id") == letter_id), None)
+		known = next((x for x in self.state.inbox if x.get("id") == letter_id), None)
 		if known is None:
 			self._send(404, {"code": "NOT_FOUND", "message": f"no letter {letter_id}"})
 			return

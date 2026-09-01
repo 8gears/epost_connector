@@ -14,7 +14,6 @@
   "received_at",
   "letter_column",
   "status",
-  "folder",
   "letter_type",
   "epost_status",
   "document_types",
@@ -99,15 +98,6 @@
    "reqd": 1
   },
   {
-   "description": "Where the letter lives on ePost: INBOX, Storage, or the eArchive folder name.",
-   "fieldname": "folder",
-   "fieldtype": "Data",
-   "in_list_view": 1,
-   "in_standard_filter": 1,
-   "label": "ePost Folder",
-   "read_only": 1
-  },
-  {
    "fieldname": "letter_type",
    "fieldtype": "Data",
    "label": "Letter Type",
@@ -121,8 +111,11 @@
    "read_only": 1
   },
   {
+   "description": "The categories ePost put on the letter, lower-cased so that Invoice, INVOICE and invoice are one filter value. The original spelling is kept in Raw Metadata. Filtering is a substring match, so a letter carrying several categories is found by any one of them.",
    "fieldname": "document_types",
    "fieldtype": "Small Text",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
    "label": "Document Types",
    "read_only": 1
   },
@@ -282,7 +275,7 @@
  ],
  "index_web_pages_for_search": 0,
  "links": [],
- "modified": "2026-09-01 00:00:00.000000",
+ "modified": "2026-09-01 15:00:00.000000",
  "modified_by": "Administrator",
  "module": "ePost Connector",
  "name": "ePost Letter",

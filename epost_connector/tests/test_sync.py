@@ -25,6 +25,7 @@ from epost_connector.epost.sync import (
 	reconcile,
 	sync_letters,
 )
+from epost_connector.extraction import registry
 from epost_connector.tests import mock_epost
 from epost_connector.tests.mock_epost import (
 	BAD_THUMBNAIL_LETTER,
@@ -118,28 +119,50 @@ class SyncCoverageTest(ePostSiteTestCase):
 		self.assertEqual(self.letter_doc("s-participant").sender_name, "participant-1")
 		self.assertEqual(self.letter_doc("s-user").sender_name, "user-1")
 
-	def test_the_list_view_spends_its_column_budget_on_the_amount(self):
+	def test_the_list_view_shows_only_columns_that_hold_a_real_value(self):
 		"""List columns come only from `in_list_view`; there is no client API.
 
-		Frappe caps how many render by viewport, so this is a budget rather than
-		a wish list — `folder` and `currency` were dropped because they crowded
-		out the number invoice triage is done on.
+		`amount` is deliberately not among them, and this is the guard on putting
+		it back. See `test_the_amount_column_would_be_fabricated_today` for why.
 		"""
 		meta = frappe.get_meta("ePost Letter")
 		listed = [f.fieldname for f in meta.fields if f.in_list_view]
 
-		self.assertEqual(listed, ["title", "sender_name", "received_at", "status", "amount"])
+		self.assertEqual(listed, ["title", "sender_name", "received_at", "status", "folder"])
 
-	def test_the_amount_column_renders_its_own_currency_symbol(self):
-		"""Which is why a separate currency column is redundant: a Currency field
-		reads its symbol from the field named in `options`."""
+	def test_the_amount_column_would_be_fabricated_today(self):
+		"""Why `amount` is not a list column, and the condition for adding it.
+
+		A Currency column is `NOT NULL DEFAULT 0`, so an unextracted letter holds
+		0 rather than nothing, and a Currency field with no `currency` beside it
+		formats using the *site* default. Shown in a list that is read for
+		bookkeeping, a letter nobody has opened therefore states an amount and a
+		denomination that were never read off it.
+
+		The app ships only the no-op extractor, so that is every row, always.
+		Register a real extractor and this test starts failing — that is the
+		signal to make `amount` a column.
+		"""
+		self.assertEqual(frappe.db.get_single_value("ePost Settings", "extractor"), "None")
+		self.assertEqual(set(registry.EXTRACTORS), {"", "None"})
+
+		self.state.content_override.clear()
+		sync_letters()
+
+		amounts = frappe.get_all("ePost Letter", pluck="amount")
+		self.assertTrue(amounts)
+		self.assertEqual(set(amounts), {0}, "an extractor now fills amount; reconsider the column")
+		self.assertEqual(set(frappe.get_all("ePost Letter", pluck="currency")), {None})
+
+	def test_the_amount_reads_its_symbol_from_the_currency_beside_it(self):
+		"""So when a real extractor does fill both, no separate currency column
+		is needed — which is why `currency` is not one either."""
 		meta = frappe.get_meta("ePost Letter")
 
 		self.assertEqual(meta.get_field("amount").options, "currency")
 		self.assertEqual(meta.get_field("vat_amount").options, "currency")
 
-	def test_the_folder_is_still_reachable_as_a_filter(self):
-		"""Dropped as a column, not as a way to find things."""
+	def test_the_folder_is_reachable_as_a_filter_as_well_as_a_column(self):
 		self.assertTrue(frappe.get_meta("ePost Letter").get_field("folder").in_standard_filter)
 
 	def test_the_letter_list_sorts_on_when_the_letter_arrived(self):

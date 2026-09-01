@@ -68,6 +68,73 @@ class ConnectionButtonTest(ePostSiteTestCase):
 				method()
 
 
+class ApiKeySettingsTest(ePostSiteTestCase):
+	"""The key-only setup, which is the one the live account can actually use.
+
+	Its password grant is refused because the account has 2FA on, so everything
+	here has to work with the username and password fields left empty.
+	"""
+
+	def key_only(self, **overrides) -> None:
+		self.configure_settings(api_key=mock_epost.API_KEY, username=None, password=None, **overrides)
+
+	def test_test_connection_works_on_a_key_alone_and_names_the_mode(self):
+		self.key_only()
+
+		result = test_connection()
+
+		self.assertTrue(result["ok"])
+		self.assertEqual(result["auth_mode"], "API key")
+		self.assertEqual(
+			result["unread_letters"], sum(1 for x in self.state.inbox if x["readStatus"] == "UNREAD")
+		)
+
+	def test_test_connection_takes_no_grant_when_a_key_is_all_there_is(self):
+		self.key_only()
+
+		test_connection()
+
+		self.assertEqual([c for c in self.state.calls if c[1].startswith("/core/latest/")], [])
+
+	def test_the_mode_is_named_for_the_other_two_setups_as_well(self):
+		self.assertEqual(test_connection()["auth_mode"], "password grant")
+
+		self.configure_settings(api_key=mock_epost.API_KEY)
+		self.assertEqual(test_connection()["auth_mode"], "both")
+
+	def test_the_client_reads_the_stored_key_back_out(self):
+		self.key_only()
+
+		client = ePostClient.from_settings()
+
+		self.assertEqual(client.api_key, mock_epost.API_KEY)
+		self.assertEqual(client.username, "")
+
+	def test_the_key_is_never_readable_as_an_ordinary_field(self):
+		"""It is a Password field, so nothing that reads the doc generically —
+		an export, a diff, a log of the settings — carries the key with it."""
+		self.key_only()
+		settings = frappe.get_doc("ePost Settings")
+
+		self.assertNotEqual(frappe.db.get_single_value("ePost Settings", "api_key"), mock_epost.API_KEY)
+		self.assertNotEqual(settings.api_key, mock_epost.API_KEY)
+		self.assertEqual(settings.get_password("api_key", raise_exception=False), mock_epost.API_KEY)
+
+	def test_the_sync_can_be_enabled_on_a_key_with_no_password(self):
+		self.key_only(enabled=1)
+
+		self.assertEqual(frappe.db.get_single_value("ePost Settings", "enabled"), 1)
+
+	def test_fetch_tenants_says_what_it_needs_rather_than_failing_upstream(self):
+		"""The tenants call sends the credentials as its body; a key cannot help."""
+		self.key_only()
+
+		with self.assertRaises(frappe.exceptions.ValidationError) as caught:
+			fetch_tenants()
+
+		self.assertIn("username and password", str(caught.exception))
+
+
 class SettingsValidationTest(ePostSiteTestCase):
 	def test_a_trailing_slash_on_the_base_url_is_trimmed(self):
 		"""It would otherwise become a double slash in every path."""

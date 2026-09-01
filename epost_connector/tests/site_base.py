@@ -106,7 +106,14 @@ class ePostSiteTestCase(IntegrationTestCase):
 		The tenant/company pair is set explicitly so the client does not spend a
 		call resolving it, and so a test that changes the tenant list does not
 		change what every other test authenticates as.
+
+		The two Password fields are taken out of `overrides` and assigned last:
+		the stored value of such a field is a placeholder, so putting one through
+		`update` with the rest would write the placeholder back as the secret.
 		"""
+		password = overrides.pop("password", mock_epost.PASSWORD)
+		api_key = overrides.pop("api_key", None)
+
 		settings = frappe.get_doc("ePost Settings")
 		settings.update(
 			{
@@ -118,7 +125,8 @@ class ePostSiteTestCase(IntegrationTestCase):
 				**overrides,
 			}
 		)
-		settings.password = mock_epost.PASSWORD
+		settings.password = password
+		settings.api_key = api_key
 		settings.save(ignore_permissions=True)
 		frappe.db.commit()
 		frappe.clear_document_cache("ePost Settings", "ePost Settings")
@@ -137,6 +145,7 @@ class ePostSiteTestCase(IntegrationTestCase):
 		# Read through `get_password`, because the field itself holds a
 		# placeholder and writing that back would store the placeholder.
 		snapshot["password"] = settings.get_password("password", raise_exception=False)
+		snapshot["api_key"] = settings.get_password("api_key", raise_exception=False)
 		return snapshot
 
 	def _restore_settings(self) -> None:

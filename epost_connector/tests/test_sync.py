@@ -737,6 +737,29 @@ class SyncLogTest(ePostSiteTestCase):
 		self.assertEqual(frappe.get_all("ePost Sync Log", pluck="status"), ["Failed"])
 
 
+class CredentialRedactionTest(ePostSiteTestCase):
+	"""What a run stores is read by people who do not hold the credentials.
+
+	An upstream error body can be built out of the request that produced it — a
+	proxy quoting a header, a gateway quoting the form it rejected — and that
+	text is written to the Sync Log, to the letter's own `sync_error` and to
+	Error Log. All three outlive the run.
+	"""
+
+	def test_an_echoed_api_key_reaches_none_of_the_places_a_run_writes_to(self):
+		self.configure_settings(api_key=mock_epost.API_KEY, username=None, password=None)
+		self.state.inbox = [letter(mock_epost.ECHO_SECRET_LETTER)]
+		self.state.archive = []
+
+		summary = LetterSync().run()
+
+		self.assertEqual(summary["status"], "Partial")
+		errors = "\n".join(_errors_of_last_run())
+		self.assertIn("[redacted]", errors)
+		for stored in (errors, self.letter_doc(mock_epost.ECHO_SECRET_LETTER).sync_error, _error_log_text()):
+			self.assertNotIn(mock_epost.API_KEY, stored or "")
+
+
 class TruncatedListingTest(ePostSiteTestCase):
 	"""A service that ignores `offset` gives a partial run, not a clean one."""
 
@@ -856,6 +879,11 @@ def _extractor_returning_amount():
 			return ExtractionResult(gross_amount=96.64, currency="CHF")
 
 	return Fixed
+
+
+def _error_log_text() -> str:
+	rows = frappe.get_all("Error Log", fields=["method", "error"])
+	return "\n".join(f"{row.method}\n{row.error}" for row in rows)
 
 
 def _errors_of_last_run() -> list[str]:

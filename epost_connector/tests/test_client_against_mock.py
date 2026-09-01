@@ -28,12 +28,14 @@ from epost_connector.epost.exceptions import (
 from epost_connector.tests import mock_epost
 from epost_connector.tests.mock_epost import (
 	ACCESS_TOKEN,
+	API_KEY,
 	COMPANY_ID,
 	EMPTY_CONTENT_LETTER,
 	HTML_CONTENT_LETTER,
 	NFC_DIRECTORY_NAME,
 	REFRESHED_ACCESS_TOKEN,
 	TENANT_ID,
+	WRONG_API_KEY,
 	MockePost,
 	MockState,
 	letter,
@@ -166,6 +168,154 @@ class TokenLifecycleTest(MockServerTestCase):
 			client.list_letters()
 		# Exactly one retry: the first call, then one more after re-authenticating.
 		self.assertEqual(len(self.state.issued_tokens()), 2)
+
+
+class ApiKeyAuthTest(MockServerTestCase):
+	"""spec:20263-20271 — `apiKeyAuth` is a security scheme in its own right.
+
+	It is the only way in for the account this app runs as: that account has 2FA
+	enabled, and the password grant is refused because of it. So a key on its own
+	has to be a complete credential here, and everything the token path does —
+	resolving a tenant, taking a grant, renewing on a 401 — has to be *skipped*
+	rather than merely tolerated, because each of those calls is one the service
+	will not answer.
+	"""
+
+	def key_client(self, api_key: str = API_KEY, **kwargs) -> ePostClient:
+		client = ePostClient(api_key=api_key, base_url=self.mock.base_url, **kwargs)
+		client.BACKOFF_SECONDS = 0
+		self.addCleanup(client.session.close)
+		return client
+
+	def both_client(self, **kwargs) -> ePostClient:
+		return self.client(api_key=API_KEY, tenant_id=TENANT_ID, company_id=str(COMPANY_ID), **kwargs)
+
+	def test_a_key_alone_reads_the_letterbox_and_holds_no_token(self):
+		client = self.key_client()
+
+		letters = client.list_letters()
+
+		self.assertEqual(len(letters), len(self.state.inbox))
+		self.assertIsNone(client.token)
+
+	def test_key_only_auth_never_touches_the_auth_endpoints(self):
+		"""The grant is the thing 2FA refuses; a key-only run must not attempt it."""
+		client = self.key_client()
+		client.authenticate()
+		list(client.iter_all_letters())
+
+		self.assertEqual([c for c in self.state.calls if c[1].startswith("/core/latest/")], [])
+
+	def test_authenticate_reports_no_token_rather_than_inventing_one(self):
+		self.assertIsNone(self.key_client().authenticate())
+
+	def test_the_key_travels_in_the_documented_header_and_alone(self):
+		self.key_client().list_letters()
+
+		self.assertEqual(self.state.credentials_for("/epost/v2/letters"), [(None, API_KEY)])
+
+	def test_a_wrong_key_is_a_clean_auth_error_that_is_not_retried(self):
+		"""With no token there is nothing to renew, so a 401 is simply the answer."""
+		client = self.key_client(api_key=WRONG_API_KEY)
+
+		with self.assertRaises(ePostAuthError) as caught:
+			client.list_letters()
+
+		self.assertEqual(caught.exception.status_code, 401)
+		self.assertEqual(len(self.state.calls_to("/epost/v2/letters")), 1)
+		self.assertEqual(self.state.issued_tokens(), [])
+
+	def test_both_credentials_are_sent_when_both_are_configured(self):
+		client = self.both_client()
+		client.list_letters()
+
+		self.assertEqual(self.state.issued_tokens(), ["password"])
+		authorization, key = self.state.credentials_for("/epost/v2/letters")[0]
+		self.assertEqual(authorization, f"Bearer {ACCESS_TOKEN}")
+		self.assertEqual(key, API_KEY)
+
+	def test_the_key_is_sent_on_the_auth_endpoints_too(self):
+		self.client(api_key=API_KEY).authenticate()
+
+		for path in ("/core/latest/tenants", "/core/latest/token"):
+			with self.subTest(path=path):
+				self.assertEqual(self.state.credentials_for(path)[0][1], API_KEY)
+
+	def test_a_refused_grant_beside_a_key_does_not_fail_the_read(self):
+		client = self._client_with_a_grant_that_fails()
+
+		letters = client.list_letters()
+
+		self.assertEqual(len(letters), len(self.state.inbox))
+		self.assertIsNone(client.token)
+		self.assertEqual(client.auth_mode, "API key")
+
+	def test_a_refused_grant_is_attempted_once_and_not_again_per_call(self):
+		client = self._client_with_a_grant_that_fails()
+
+		client.list_letters()
+		client.list_letters()
+
+		self.assertEqual(len(self.state.calls_to("/core/latest/token")), 1)
+
+	def test_a_refused_grant_without_a_key_still_fails(self):
+		"""The fallback is the key's doing, not a general softening of auth."""
+		client = ePostClient(
+			"nobody@example.com",
+			"wrong-password-entirely",
+			base_url=self.mock.base_url,
+			tenant_id=TENANT_ID,
+			company_id=str(COMPANY_ID),
+		)
+		self.addCleanup(client.session.close)
+
+		with self.assertRaises(ePostAuthError):
+			client.list_letters()
+
+	def test_an_echoed_key_never_reaches_the_error_message(self):
+		client = self.key_client()
+
+		with self.assertRaises(ePostAPIError) as caught:
+			client.get_letter(mock_epost.ECHO_SECRET_LETTER)
+
+		self.assertNotIn(API_KEY, str(caught.exception))
+		self.assertIn("[redacted]", str(caught.exception))
+
+	def test_no_credential_at_all_is_refused_before_anything_is_sent(self):
+		with self.assertRaises(ePostAuthError):
+			ePostClient(base_url=self.mock.base_url)
+
+	def test_the_auth_mode_names_what_the_requests_carry(self):
+		self.assertEqual(self.key_client().auth_mode, "API key")
+		self.assertEqual(self.client().auth_mode, "password grant")
+		self.assertEqual(self.both_client().auth_mode, "both")
+
+	def test_listing_tenants_needs_the_password_a_key_cannot_stand_in_for(self):
+		"""The credentials are the body there, so the header buys nothing."""
+		client = self.key_client()
+
+		with self.assertRaises(ePostAuthError):
+			client.list_tenants()
+
+		self.assertEqual(self.state.calls_to("/core/latest/tenants"), [])
+
+	def _client_with_a_grant_that_fails(self) -> ePostClient:
+		"""Both credentials configured, but only the key is any good.
+
+		The tenant pair is given so the failure is the grant itself rather than
+		the tenant resolution ahead of it.
+		"""
+		client = ePostClient(
+			"nobody@example.com",
+			"wrong-password-entirely",
+			api_key=API_KEY,
+			base_url=self.mock.base_url,
+			tenant_id=TENANT_ID,
+			company_id=str(COMPANY_ID),
+		)
+		client.BACKOFF_SECONDS = 0
+		self.addCleanup(client.session.close)
+		return client
 
 
 class QueryContractTest(MockServerTestCase):

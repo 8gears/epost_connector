@@ -21,6 +21,11 @@ page, the same endpoint answering 200 with nothing at all, a service that
 ignores `offset` and re-serves the first window forever, a folder name that
 arrives NFD-decomposed, and a field whose value is shaped like a filesystem path.
 
+Both documented security schemes are honoured (spec:20263-20271): a bearer token
+from the password grant, and an `X-API-KEY` header that authenticates on its own.
+A key that is presented decides the request either way — a valid one needs no
+token beside it, a wrong one is a 401 however good the token is.
+
 Nothing here writes: the mock refuses any verb but GET below `/epost/`, which is
 the same contract `ePostClient._guard_read_only` enforces from the other side.
 
@@ -28,6 +33,7 @@ Usage:
 
 	with MockePost() as mock:
 		client = ePostClient(mock.USERNAME, mock.PASSWORD, base_url=mock.base_url)
+		key_only = ePostClient(api_key=mock.API_KEY, base_url=mock.base_url)
 """
 
 from __future__ import annotations
@@ -51,6 +57,11 @@ USERNAME = "letterbox@example.com"
 #: characters alone so that ordinary short words are not mangled. A password a
 #: test cannot get redacted proves nothing about redaction.
 PASSWORD = "correct-horse-battery-staple"
+
+#: A fake key of the length the real ones have (36 characters). Never a real one:
+#: nothing in this repo may carry a credential that works against api.epost.ch.
+API_KEY = "e3f7a91c-5b24-4d80-9c6e-1a8f2b0d4e77"
+WRONG_API_KEY = "00000000-0000-0000-0000-000000000000"
 
 ACCESS_TOKEN = "tok-abcdefghijklmnopqrstuvwxyz0123456789"
 REFRESHED_ACCESS_TOKEN = "tok-9876543210zyxwvutsrqponmlkjihgfedcba"
@@ -255,6 +266,9 @@ class MockState:
 
 	#: `(method, path, query)` for every request, in order.
 	calls: list[tuple[str, str, dict]] = field(default_factory=list)
+	#: `(path, Authorization, X-API-KEY)` for every request, in order. Kept apart
+	#: from `calls` so the tuple shape the suite already reads stays as it is.
+	credentials_seen: list[tuple[str, str | None, str | None]] = field(default_factory=list)
 	#: The decoded form body of every `/core/latest/token` request.
 	token_requests: list[dict] = field(default_factory=list)
 
@@ -291,6 +305,10 @@ class MockState:
 	#: Bearer tokens the server has stopped honouring, to model a revocation
 	#: that happened before the token's own expiry.
 	revoked_tokens: set[str] = field(default_factory=set)
+	#: The only `X-API-KEY` this server honours. spec:20263-20271 documents the
+	#: header as a security scheme in its own right, so a request carrying a
+	#: valid one needs no bearer token beside it.
+	api_key: str = API_KEY
 	#: Answer this many authenticated letterbox calls with 401 whatever the
 	#: token says, then start honouring them again. Models a token revoked
 	#: server-side before it expired: the client cannot see it coming and the
@@ -302,6 +320,10 @@ class MockState:
 
 	def calls_to(self, path: str) -> list[tuple[str, str, dict]]:
 		return [c for c in self.calls if c[1] == path]
+
+	def credentials_for(self, path: str) -> list[tuple[str | None, str | None]]:
+		"""`(Authorization, X-API-KEY)` carried by every request to `path`."""
+		return [(auth, key) for seen_path, auth, key in self.credentials_seen if seen_path == path]
 
 	def content_for(self, letter_id: str) -> tuple[bytes, str]:
 		if letter_id in self.content_override:
@@ -389,6 +411,9 @@ class _Handler(BaseHTTPRequestHandler):
 		path = parsed.path
 		query = parse_qs(parsed.query, keep_blank_values=True)
 		self.state.calls.append((method, path, query))
+		self.state.credentials_seen.append(
+			(path, self.headers.get("Authorization"), self.headers.get("X-API-KEY"))
+		)
 
 		if path in AUTH_PATHS:
 			self._auth_route(method, path)
@@ -406,13 +431,9 @@ class _Handler(BaseHTTPRequestHandler):
 			self._send(forced, {"error": "forced", "path": path})
 			return
 
-		if self.state.reject_bearer_times > 0:
-			self.state.reject_bearer_times -= 1
-			self._send(401, {"error": "unauthorized", "error_description": "token revoked"})
-			return
-
-		if not self._authorised():
-			self._send(401, {"error": "unauthorized", "error_description": "invalid or expired token"})
+		refusal = self._auth_refusal()
+		if refusal is not None:
+			self._send(401, refusal)
 			return
 
 		self._letterbox_route(path, query)
@@ -423,7 +444,30 @@ class _Handler(BaseHTTPRequestHandler):
 				return self.state.force_status.pop(index)["status"]
 		return None
 
-	def _authorised(self) -> bool:
+	def _auth_refusal(self) -> dict | None:
+		"""None when the request may proceed, else the 401 body to answer with.
+
+		A presented `X-API-KEY` settles the question on its own, in both
+		directions: spec:20263-20271 makes it a complete scheme, so a valid one
+		needs no bearer token beside it, and an invalid one is a refusal whatever
+		else the request carries. `reject_bearer_times` models a *token* revoked
+		server-side, so it only applies where a token is what is being presented.
+		"""
+		key = self.headers.get("X-API-KEY")
+		if key is not None:
+			if key != self.state.api_key:
+				return {"error": "unauthorized", "error_description": "invalid API key"}
+			return None
+
+		if self.state.reject_bearer_times > 0:
+			self.state.reject_bearer_times -= 1
+			return {"error": "unauthorized", "error_description": "token revoked"}
+
+		if not self._bearer_ok():
+			return {"error": "unauthorized", "error_description": "invalid or expired token"}
+		return None
+
+	def _bearer_ok(self) -> bool:
 		header = self.headers.get("Authorization") or ""
 		if not header.startswith("Bearer "):
 			return False
@@ -529,12 +573,17 @@ class _Handler(BaseHTTPRequestHandler):
 
 		# A gateway that quotes the request it rejected, credentials and all.
 		# Real proxies do this, and the body ends up in an ePost Sync Log row.
+		# Every credential the client can hold is echoed, the API key included:
+		# a redactor that knows about two of the three still leaks the third.
 		if letter_id == ECHO_SECRET_LETTER:
 			self._send(
 				500,
 				{
 					"code": "UPSTREAM_REJECTED",
-					"message": f"upstream rejected form: password={PASSWORD} authorization=Bearer {ACCESS_TOKEN}",
+					"message": (
+						f"upstream rejected form: password={PASSWORD} "
+						f"authorization=Bearer {ACCESS_TOKEN} x-api-key={API_KEY}"
+					),
 				},
 			)
 			return
@@ -602,6 +651,7 @@ class MockePost:
 
 	USERNAME = USERNAME
 	PASSWORD = PASSWORD
+	API_KEY = API_KEY
 
 	def __init__(self, state: MockState | None = None) -> None:
 		self.state = state or MockState()

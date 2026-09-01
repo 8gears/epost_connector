@@ -23,8 +23,14 @@ class ePostSettings(Document):
 				)
 			)
 
-		if self.enabled and not (self.username and self.get_password("password", raise_exception=False)):
-			frappe.throw(_("Set a username and password before enabling the ePost sync"))
+		if self.enabled and not self._has_credentials():
+			frappe.throw(_("Set an API key, or a username and password, before enabling the ePost sync"))
+
+	def _has_credentials(self) -> bool:
+		"""Either scheme on its own is enough; the key does not need the pair."""
+		if self.get_password("api_key", raise_exception=False):
+			return True
+		return bool(self.username and self.get_password("password", raise_exception=False))
 
 
 @frappe.whitelist()
@@ -39,13 +45,18 @@ def fetch_tenants() -> list[dict]:
 
 @frappe.whitelist()
 def test_connection() -> dict:
-	"""Authenticate and make one harmless read, to prove the credentials work."""
+	"""Authenticate and make one harmless read, to prove the credentials work.
+
+	`authenticate` takes no token under key-only auth, so the read below is the
+	whole of the proof there — which is the point: it is the call the sync makes.
+	"""
 	frappe.only_for(("System Manager", "Accounts Manager"))
 	try:
 		client = ePostClient.from_settings()
 		client.authenticate()
 		return {
 			"ok": True,
+			"auth_mode": client.auth_mode,
 			"tenant_id": client.tenant_id,
 			"company_id": client.company_id,
 			"unread_letters": client.get_unread_count(),

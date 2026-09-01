@@ -14,12 +14,21 @@ archived from here would change what that workflow sees. So:
 
 which leaves POST available only for the two /core/latest/ auth endpoints.
 
+AUTHENTICATION — spec:20263-20271 documents two independent security schemes,
+`apiKeyAuth` (an `X-API-KEY` header) and `bearerAuth` (the password grant), and
+every letterbox operation accepts either. So an API key on its own is a complete
+credential: a key-only client takes no token and never calls /core/latest at all,
+which is the only way in for an account whose password grant is refused because
+it has 2FA enabled. Configured beside a password the key is sent alongside the
+token, and a grant that fails then is logged rather than fatal.
+
 Endpoint and schema facts below are taken from spec/klara_public_api.yaml
 (KLARA Public API, openapi 3.0.3); line numbers are cited where they matter.
 """
 
 from __future__ import annotations
 
+import contextlib
 import time
 import unicodedata
 from collections.abc import Iterator
@@ -33,6 +42,7 @@ from epost_connector.epost.exceptions import (
 	ePostAPIError,
 	ePostAuthError,
 	ePostContentError,
+	ePostError,
 	ePostPaginationLimit,
 	ePostWriteAttempt,
 )
@@ -92,9 +102,10 @@ class ePostClient:
 
 	def __init__(
 		self,
-		username: str,
-		password: str,
+		username: str = "",
+		password: str = "",
 		*,
+		api_key: str | None = None,
 		base_url: str = DEFAULT_BASE_URL,
 		tenant_id: str | None = None,
 		company_id: str | None = None,
@@ -102,11 +113,12 @@ class ePostClient:
 		page_size: int = DEFAULT_PAGE_SIZE,
 		session: requests.Session | None = None,
 	) -> None:
-		if not username or not password:
-			raise ePostAuthError("ePost username and password are required")
+		if not api_key and not (username and password):
+			raise ePostAuthError("ePost needs an API key, or a username and password")
 
 		self.username = username
 		self.password = password
+		self.api_key = api_key or None
 		self.base_url = (base_url or DEFAULT_BASE_URL).rstrip("/")
 		self.tenant_id = tenant_id
 		self.company_id = company_id
@@ -114,6 +126,9 @@ class ePostClient:
 		self.page_size = min(max(int(page_size), 1), self.MAX_PAGE_SIZE)
 		self.session = session or requests.Session()
 		self.token: ePostToken | None = None
+		#: Set when the password grant failed beside a working key, so the next
+		#: request does not pay for the same refusal again.
+		self._grant_unavailable = False
 
 	@classmethod
 	def from_settings(cls, settings: Any = None, **overrides: Any) -> ePostClient:
@@ -124,17 +139,31 @@ class ePostClient:
 
 		settings = settings or frappe.get_cached_doc("ePost Settings")
 		password = settings.get_password("password", raise_exception=False)
-		if not settings.username or not password:
-			raise ePostNotConfigured("Set the ePost username and password in ePost Settings")
+		api_key = settings.get_password("api_key", raise_exception=False)
+		if not api_key and not (settings.username and password):
+			raise ePostNotConfigured("Set an ePost API key, or a username and password, in ePost Settings")
 
 		return cls(
-			settings.username,
-			password,
+			settings.username or "",
+			password or "",
+			api_key=api_key or None,
 			base_url=settings.api_base_url or DEFAULT_BASE_URL,
 			tenant_id=settings.tenant_id or None,
 			company_id=str(settings.company_id) if settings.company_id else None,
 			**overrides,
 		)
+
+	@property
+	def auth_mode(self) -> str:
+		"""Which of the two documented schemes this client is presenting.
+
+		A grant that failed beside a key leaves nothing but the key on the
+		requests, so reporting "both" afterwards would name a credential they do
+		not carry.
+		"""
+		if self.api_key and self._has_password and not self._grant_unavailable:
+			return "both"
+		return "API key" if self.api_key else "password grant"
 
 	# ------------------------------------------------------------------
 	# Letters — every call below is a GET
@@ -340,12 +369,21 @@ class ePostClient:
 	# Authentication
 	# ------------------------------------------------------------------
 
+	@property
+	def _has_password(self) -> bool:
+		return bool(self.username and self.password)
+
 	def list_tenants(self) -> list[dict]:
 		"""Tenants available to these credentials.
 
 		spec:5889-5897 — array of `Tenant` {tenant_id, company_id, company_name}.
 		Needs no bearer token; the credentials are the body.
 		"""
+		if not self._has_password:
+			# The credentials *are* the body here, so a key cannot stand in for
+			# them, and the service answers a keyless form with a flat 400.
+			raise ePostAuthError("Listing tenants needs the ePost username and password")
+
 		response = self._send(
 			"POST",
 			TENANTS_PATH,
@@ -357,7 +395,31 @@ class ePostClient:
 			raise ePostAuthError("Expected a list of tenants", status_code=response.status_code)
 		return tenants
 
-	def authenticate(self) -> ePostToken:
+	def authenticate(self) -> ePostToken | None:
+		"""Establish whatever authentication is configured.
+
+		Returns None when there is no token to take: an API key authenticates on
+		its own (spec:20263-20271), so a key-only client goes straight to the
+		letterbox without touching /core/latest.
+
+		A grant that fails beside a key is logged and swallowed rather than
+		raised. The account this was written for has 2FA on, which refuses the
+		grant outright, and the key alone still serves every call — so failing
+		here would abort a sync that was going to succeed.
+		"""
+		if not self._has_password:
+			return None
+
+		try:
+			return self._password_grant()
+		except ePostError as exc:
+			if not self.api_key:
+				raise
+			self._grant_unavailable = True
+			self._log_grant_failure(exc)
+			return None
+
+	def _password_grant(self) -> ePostToken:
 		"""Password grant. spec:5984-6020 — form-urlencoded, returns PublicAPIToken."""
 		if not self.tenant_id or not self.company_id:
 			self._resolve_single_tenant()
@@ -372,6 +434,21 @@ class ePostClient:
 			}
 		)
 		return self.token
+
+	def _log_grant_failure(self, exc: Exception) -> None:
+		"""Note the refused grant somewhere a human will find it.
+
+		Best-effort on purpose: this module is importable and exercised without a
+		Frappe site, and a missing site must not turn a survivable failure into a
+		crash.
+		"""
+		with contextlib.suppress(Exception):
+			import frappe
+
+			frappe.log_error(
+				title="ePost password grant failed, continuing with the API key",
+				message=self._redact(str(exc))[:2000],
+			)
 
 	def _resolve_single_tenant(self) -> None:
 		tenants = self.list_tenants()
@@ -426,13 +503,16 @@ class ePostClient:
 			refresh_expires_at=now + int(refresh_expires_in) if refresh_expires_in is not None else None,
 		)
 
-	def _ensure_token(self) -> str:
+	def _ensure_token(self) -> None:
+		"""Obtain or renew the bearer token, if a bearer token is in play at all."""
+		if not self._has_password or self._grant_unavailable:
+			return
+
 		if self.token is None:
 			self.authenticate()
 		elif self.token.is_expired():
 			if self._refresh_token() is None:
 				self.authenticate()
-		return self.token.access_token
 
 	# ------------------------------------------------------------------
 	# Transport
@@ -491,11 +571,16 @@ class ePostClient:
 		return result
 
 	def _request(self, method: str, path: str, **kwargs: Any) -> requests.Response:
-		"""Authenticated request, re-authenticating once on a 401."""
+		"""Authenticated request, re-authenticating once on a 401.
+
+		Only when a token is what authenticated it. With no token there is
+		nothing to renew — a 401 is the API key being refused, and asking again
+		would put the same question to the same answer.
+		"""
 		self._ensure_token()
 		response = self._send(method, path, **kwargs)
 
-		if response.status_code == 401:
+		if response.status_code == 401 and self.token is not None:
 			# The token may have been revoked server-side before it expired.
 			self.token = None
 			self._ensure_token()
@@ -516,6 +601,11 @@ class ePostClient:
 		self._guard_read_only(method, url)
 
 		request_headers = {"Accept": "application/json"}
+		if self.api_key:
+			# spec:20263-20271 — `apiKeyAuth`, a scheme in its own right. Sent on
+			# every request including the two auth endpoints, which is what the
+			# portal's own examples do when both credentials are held.
+			request_headers["X-API-KEY"] = self.api_key
 		if authenticated and self.token:
 			request_headers["Authorization"] = f"Bearer {self.token.access_token}"
 		if headers:
@@ -604,7 +694,7 @@ class ePostClient:
 		without protecting anything real.
 		"""
 		out = str(text or "")
-		secrets = [self.password, self.token.access_token if self.token else None]
+		secrets = [self.password, self.api_key, self.token.access_token if self.token else None]
 		if self.token and self.token.refresh_token:
 			secrets.append(self.token.refresh_token)
 

@@ -9,6 +9,7 @@
   "enabled",
   "connection_section",
   "api_base_url",
+  "api_key",
   "username",
   "password",
   "connection_column",
@@ -50,13 +51,19 @@
    "reqd": 1
   },
   {
-   "description": "The KLARA/ePost login email.",
+   "description": "Sent as the X-API-KEY header. An alternative to the username and password, and it takes precedence: a key on its own is a complete credential, and it is the only way in for an account whose password grant is refused because it has 2FA enabled.",
+   "fieldname": "api_key",
+   "fieldtype": "Password",
+   "label": "API Key"
+  },
+  {
+   "description": "The KLARA/ePost login email. Optional when an API Key is set.",
    "fieldname": "username",
    "fieldtype": "Data",
    "label": "Username"
   },
   {
-   "description": "Set at login.epost.ch/auth/realms/klara/account under Authentication.",
+   "description": "Set at login.epost.ch/auth/realms/klara/account under Authentication. Optional when an API Key is set; given as well, both credentials are sent.",
    "fieldname": "password",
    "fieldtype": "Password",
    "label": "Password"
@@ -159,7 +166,7 @@
  "index_web_pages_for_search": 0,
  "issingle": 1,
  "links": [],
- "modified": "2026-09-01 00:00:00.000000",
+ "modified": "2026-09-01 14:30:00.000000",
  "modified_by": "Administrator",
  "module": "ePost Connector",
  "name": "ePost Settings",

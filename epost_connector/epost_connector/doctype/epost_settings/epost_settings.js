@@ -33,7 +33,9 @@ frappe.ui.form.on("ePost Settings", {
 function show_connection_state(frm) {
 	frm.dashboard.clear_headline();
 
-	if (!frm.doc.username || !frm.doc.tenant_id) {
+	// An API key authenticates on its own, so a key-only setup has no tenant to
+	// pick and must not be nagged about one.
+	if (!frm.doc.api_key && (!frm.doc.username || !frm.doc.tenant_id)) {
 		frm.dashboard.set_headline(
 			__("Fill in the credentials, then press Fetch Tenants to pick a tenant."),
 			"orange",
@@ -224,8 +226,9 @@ function test_connection(frm) {
 			frappe.msgprint({
 				title: __("Connection OK"),
 				indicator: "green",
-				message: __("Tenant {0}, {1} unread letters in the inbox.", [
-					message.tenant_id,
+				message: __("Authenticated with {0}. Tenant {1}, {2} unread letters in the inbox.", [
+					message.auth_mode,
+					message.tenant_id || __("not applicable"),
 					message.unread_letters,
 				]),
 			});

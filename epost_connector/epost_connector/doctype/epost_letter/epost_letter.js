@@ -87,13 +87,18 @@ function render_preview(frm) {
 	// Without this the iframe would 403 and render as a blank rectangle with no
 	// explanation. A user who can open this form can read its attachment, so a
 	// missing row means the file is gone, not that access was refused.
-	frappe.db.get_value("File", { file_url: frm.doc.file }, "name").then(({ message }) => {
-		if (!message || !message.name) {
-			render_empty_preview(frm, wrapper, __("The PDF record for this letter no longer exists."));
-			return;
-		}
-		render_iframe(frm, wrapper);
-	});
+	frappe.db.get_value("File", { file_url: frm.doc.file }, "name").then(
+		(r) => {
+			if (!r || !r.message || !r.message.name) {
+				render_empty_preview(frm, wrapper, __("The PDF record for this letter no longer exists."));
+				return;
+			}
+			render_iframe(frm, wrapper);
+		},
+		// A probe that could not run is not evidence the file is gone, so show
+		// the preview and let the iframe speak for itself.
+		() => render_iframe(frm, wrapper)
+	);
 }
 
 function render_iframe(frm, wrapper) {

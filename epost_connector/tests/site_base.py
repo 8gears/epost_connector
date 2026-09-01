@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+from typing import ClassVar
 
 import frappe
 from frappe.tests import IntegrationTestCase
@@ -49,6 +50,11 @@ def purge() -> None:
 	frappe.db.delete("File", {"attached_to_doctype": ("in", OWNED_DOCTYPES)})
 	for doctype in OWNED_DOCTYPES:
 		frappe.db.delete(doctype)
+
+	# The hostile thumbnail fixture makes the sync log one Error Log row per run.
+	# Nothing prunes those between runs, and they had reached four figures on the
+	# dev site — noise in a table people read when something is actually wrong.
+	frappe.db.delete("Error Log", {"error": ("like", "%epost%")})
 	frappe.db.commit()
 
 	# The rows are gone; the bytes they named would otherwise pile up in the
@@ -75,8 +81,24 @@ class ePostSiteTestCase(IntegrationTestCase):
 		self.addCleanup(purge)
 		self.configure_settings()
 
+	#: Every field on the single this class manages, with the value a test that
+	#: does not mention it should see. `ePost Settings` outlives the transaction
+	#: — `configure_settings` commits — so a field left off this list keeps
+	#: whatever the previous test set and silently changes the next one's
+	#: fixture. `default_item_code` did exactly that.
+	SETTINGS_BASELINE: ClassVar[dict] = {
+		"enabled": 1,
+		"extractor": "None",
+		"company": None,
+		"default_item_code": None,
+		"default_expense_account": None,
+		"default_cost_center": None,
+		"last_sync_at": None,
+		"last_sync_status": None,
+	}
+
 	def configure_settings(self, **overrides) -> None:
-		"""Point `ePost Settings` at the mock.
+		"""Point `ePost Settings` at the mock, resetting everything else.
 
 		The tenant/company pair is set explicitly so the client does not spend a
 		call resolving it, and so a test that changes the tenant list does not
@@ -85,12 +107,11 @@ class ePostSiteTestCase(IntegrationTestCase):
 		settings = frappe.get_doc("ePost Settings")
 		settings.update(
 			{
-				"enabled": 1,
+				**self.SETTINGS_BASELINE,
 				"api_base_url": self.mock.base_url,
 				"username": mock_epost.USERNAME,
 				"tenant_id": TENANT_ID,
 				"company_id": str(COMPANY_ID),
-				"extractor": "None",
 				**overrides,
 			}
 		)
@@ -240,6 +261,46 @@ def cost_center(company: str) -> str:
 	frappe.get_doc("Company", company).create_default_cost_center()
 	frappe.db.commit()
 	return frappe.db.get_value("Cost Center", {"company": company, "is_group": 0}, "name")
+
+
+def ensure_service_item(item_code: str = "ePost Test Service") -> str:
+	"""A non-stock service Item for the `default_item_code` path.
+
+	Non-stock deliberately: the invoice line the importer builds has no warehouse
+	and no stock movement behind it, and a stock Item would demand both.
+	"""
+	if frappe.db.exists("Item", item_code):
+		return item_code
+
+	ensure_erpnext_fixtures()
+	group = frappe.db.get_value("Item Group", {"is_group": 0}, "name")
+	if not group:
+		root = frappe.db.get_value("Item Group", {"is_group": 1}, "name")
+		group = (
+			frappe.get_doc(
+				{
+					"doctype": "Item Group",
+					"item_group_name": "ePost Test Services",
+					"is_group": 0,
+					**({"parent_item_group": root} if root else {}),
+				}
+			)
+			.insert(ignore_permissions=True)
+			.name
+		)
+
+	item = frappe.get_doc(
+		{
+			"doctype": "Item",
+			"item_code": item_code,
+			"item_name": item_code,
+			"item_group": group,
+			"stock_uom": "Nos",
+			"is_stock_item": 0,
+		}
+	).insert(ignore_permissions=True)
+	frappe.db.commit()
+	return item.name
 
 
 def ensure_supplier(supplier_name: str) -> str:

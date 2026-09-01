@@ -24,6 +24,7 @@ from epost_connector.tests.site_base import (
 	cost_center,
 	ensure_company,
 	ensure_fiscal_years,
+	ensure_service_item,
 	ensure_supplier,
 	ePostSiteTestCase,
 	expense_account,
@@ -156,6 +157,55 @@ class DraftInvoiceTest(ImportTestCase):
 		invoice = frappe.get_doc("Purchase Invoice", result["purchase_invoice"])
 		self.assertEqual(invoice.docstatus, 0)
 		self.assertEqual(invoice.items[0].rate, 0)
+
+
+class InvoiceLineTest(ImportTestCase):
+	"""The line the importer builds, with and without a configured Item.
+
+	The no-Item path was flagged as the least certain thing in the app: it
+	appends a line carrying only `item_name` and an expense account, and whether
+	ERPNext accepts that is a question about ERPNext, not about this code.
+	"""
+
+	def test_without_a_default_item_the_line_carries_the_letter_title(self):
+		self.assertFalse(frappe.db.get_single_value("ePost Settings", "default_item_code"))
+		self.letter_with(vendor_name=SUPPLIER, amount=42.0)
+
+		result = create_purchase_invoice(self.letter_doc("inbox-1").name)
+
+		line = frappe.get_doc("Purchase Invoice", result["purchase_invoice"]).items[0]
+		self.assertFalse(line.item_code)
+		self.assertEqual(line.item_name, self.letter_doc("inbox-1").title)
+		self.assertTrue(line.expense_account)
+		self.assertEqual(line.rate, 42.0)
+
+	def test_with_a_default_item_the_line_uses_it(self):
+		item = ensure_service_item()
+		self.configure_settings(
+			company=self.company,
+			default_item_code=item,
+			default_expense_account=expense_account(self.company),
+			default_cost_center=cost_center(self.company),
+		)
+		self.letter_with(vendor_name=SUPPLIER, amount=42.0)
+
+		result = create_purchase_invoice(self.letter_doc("inbox-1").name)
+
+		invoice = frappe.get_doc("Purchase Invoice", result["purchase_invoice"])
+		self.assertEqual(invoice.docstatus, 0)
+		self.assertEqual(invoice.items[0].item_code, item)
+		self.assertEqual(invoice.items[0].rate, 42.0)
+
+	def test_the_line_is_a_single_unit_at_the_full_amount(self):
+		"""Quantity is not a thing a letter carries; the amount is the rate."""
+		self.letter_with(vendor_name=SUPPLIER, amount=1234.56)
+
+		result = create_purchase_invoice(self.letter_doc("inbox-1").name)
+
+		line = frappe.get_doc("Purchase Invoice", result["purchase_invoice"]).items[0]
+		self.assertEqual(line.qty, 1)
+		self.assertEqual(line.rate, 1234.56)
+		self.assertEqual(line.amount, 1234.56)
 
 
 class CurrencyTest(ImportTestCase):

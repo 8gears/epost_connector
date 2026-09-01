@@ -272,6 +272,16 @@ class MockState:
 	#: first window forever. Which of the two the real one is, is unknown.
 	ignore_offset: bool = False
 
+	#: spec:11815-11819 says the inbox count is a bare integer; a working
+	#: reference client observed `{"count": n}`. Neither can be confirmed from
+	#: here, so the client accepts both and this switches between them.
+	count_as_object: bool = False
+
+	#: Wrap a listing in the envelope the rest of this API does not use. The spec
+	#: says a bare array, but a service that grew a wrapper must not be read as an
+	#: empty letterbox — which is what "no envelope handling" would mean.
+	list_envelope: str | None = None
+
 	#: Token lifetime handed out. Small values make the client re-authenticate.
 	expires_in: int = 600
 	refresh_expires_in: int | None = 1800
@@ -484,18 +494,18 @@ class _Handler(BaseHTTPRequestHandler):
 			if not query.get("letter-types"):
 				self._send(400, {"code": "MISSING_PARAM", "message": "letter-types is required"})
 				return
-			self._send(200, self._window(state.inbox, query))
+			self._send(200, self._listing(state.inbox, query))
 			return
 
 		if path == "/epost/v2/letters/inbox/count":
-			# spec:11815-11819 — a bare integer, not an object.
-			self._send(200, sum(1 for x in state.inbox if x.get("readStatus") == "UNREAD"))
+			unread = sum(1 for x in state.inbox if x.get("readStatus") == "UNREAD")
+			self._send(200, {"count": unread} if state.count_as_object else unread)
 			return
 
 		if path == "/epost/v2/letters/search":
 			needle = (query.get("value") or query.get("keyword") or [""])[0].lower()
 			hits = [x for x in state.all_letters() if needle in json.dumps(x).lower()]
-			self._send(200, self._window(hits, query))
+			self._send(200, self._listing(hits, query))
 			return
 
 		if path == "/epost/v2/archives/directories":
@@ -505,7 +515,7 @@ class _Handler(BaseHTTPRequestHandler):
 		if path == "/epost/v2/archives/letters":
 			directory_id = (query.get("directory-id") or [""])[0]
 			pool = state.in_directory(directory_id) if directory_id else state.root_storage()
-			self._send(200, self._window(pool, query))
+			self._send(200, self._listing(pool, query))
 			return
 
 		if path.startswith("/epost/v2/letters/"):
@@ -550,6 +560,11 @@ class _Handler(BaseHTTPRequestHandler):
 			return
 
 		self._send(404, {"code": "NOT_FOUND", "message": f"no action {action}"})
+
+	def _listing(self, pool: list[dict], query: dict):
+		"""The window, bare or wrapped depending on `state.list_envelope`."""
+		window = self._window(pool, query)
+		return {self.state.list_envelope: window} if self.state.list_envelope else window
 
 	def _window(self, pool: list[dict], query: dict) -> list[dict]:
 		"""The slice `limit`/`offset` asks for.

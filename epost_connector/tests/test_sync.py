@@ -16,6 +16,7 @@ import frappe
 
 from epost_connector.epost import sync as sync_module
 from epost_connector.epost.sync import LetterSync, _parse_datetime, _safe_name, reconcile, sync_letters
+from epost_connector.tests import mock_epost
 from epost_connector.tests.mock_epost import (
 	BAD_THUMBNAIL_LETTER,
 	EMPTY_CONTENT_LETTER,
@@ -85,6 +86,44 @@ class SyncCoverageTest(ePostSiteTestCase):
 		fallback = self.letter_doc("inbox-2").sender_name
 		self.assertTrue(fallback)
 		self.assertEqual(fallback, "b0f742a3-0a54-401d-bf41-38a3a9628953")
+
+	def test_the_sender_resolves_in_order_and_never_leaves_the_column_blank(self):
+		"""description -> senderName -> senderParticipantId -> senderUserId.
+
+		`senderName` is the odd rung: the schema does not document it, and it is
+		read in case the live service returns more than it says. That branch is
+		unreachable from the default fixtures, so it gets a payload of its own.
+		"""
+		self.state.content_override.clear()
+		self.state.inbox = [
+			letter("s-described", description="Invoice from Described AG", senderName="Ignored AG"),
+			letter("s-named", description=None, senderName="Named AG"),
+			letter("s-participant", description=None, senderParticipantId="participant-1"),
+			letter("s-user", description=None, senderParticipantId=None, senderUserId="user-1"),
+		]
+
+		sync_letters()
+
+		self.assertEqual(self.letter_doc("s-described").sender_name, "Invoice from Described AG")
+		self.assertEqual(self.letter_doc("s-named").sender_name, "Named AG")
+		self.assertEqual(self.letter_doc("s-participant").sender_name, "participant-1")
+		self.assertEqual(self.letter_doc("s-user").sender_name, "user-1")
+
+	def test_the_list_view_shows_the_columns_the_desk_needs(self):
+		"""List columns come only from `in_list_view`; there is no client API."""
+		meta = frappe.get_meta("ePost Letter")
+		listed = [f.fieldname for f in meta.fields if f.in_list_view]
+
+		for field in ("title", "sender_name", "received_at", "status", "folder", "currency", "amount"):
+			with self.subTest(field=field):
+				self.assertIn(field, listed)
+
+	def test_the_letter_list_sorts_on_when_the_letter_arrived(self):
+		"""v16 accepts a non-standard `sort_field`; it was flagged as a risk."""
+		meta = frappe.get_meta("ePost Letter")
+
+		self.assertEqual(meta.sort_field, "received_at")
+		self.assertEqual(meta.sort_order, "DESC")
 
 
 class IdempotencyTest(ePostSiteTestCase):
@@ -241,6 +280,68 @@ class BadContentTest(ePostSiteTestCase):
 				doc = self.letter_doc(letter_id)
 				self.assertEqual(doc.status, "Downloaded")
 				self.assertFalse(doc.sync_error)
+
+
+class AttachmentMechanicsTest(ePostSiteTestCase):
+	"""Framework behaviour `download` is written around, pinned by measurement.
+
+	The code carries a `letter.reload()` between inserting the File and saving
+	the letter, and used to explain it as a guard against Frappe writing
+	`attached_to_field` back onto the parent and bumping its `modified`. On
+	Frappe 16 that does not happen, so the guard is against a different risk —
+	hooks this app does not control — and the test below is the canary: if a
+	future version starts writing the field back, this fails and says so rather
+	than the sync starting to raise TimestampMismatchError in production.
+	"""
+
+	def test_frappe_does_not_write_attached_to_field_back_onto_the_parent(self):
+		letter_doc = frappe.get_doc(
+			{"doctype": "ePost Letter", "letter_id": "probe-attach", "status": "New"}
+		).insert(ignore_permissions=True)
+		before = frappe.db.get_value("ePost Letter", letter_doc.name, "modified")
+
+		frappe.get_doc(
+			{
+				"doctype": "File",
+				"file_name": "probe.pdf",
+				"attached_to_doctype": "ePost Letter",
+				"attached_to_name": letter_doc.name,
+				"attached_to_field": "file",
+				"is_private": 1,
+				"content": mock_epost.minimal_pdf("probe"),
+			}
+		).insert(ignore_permissions=True)
+
+		message = (
+			"Frappe now writes attached_to_field back onto the parent. The reload in "
+			"LetterSync.download is load-bearing again — restore the comment explaining that, and "
+			"check every other place this app inserts a File with attached_to_field set."
+		)
+		self.assertIsNone(frappe.db.get_value("ePost Letter", letter_doc.name, "file"), message)
+		self.assertEqual(frappe.db.get_value("ePost Letter", letter_doc.name, "modified"), before, message)
+
+	def test_the_download_survives_that_timestamp_bump(self):
+		"""The end-to-end proof: no TimestampMismatchError anywhere in a sync."""
+		self.state.content_override.clear()
+
+		summary = sync_letters()
+
+		self.assertEqual(summary["status"], "Success")
+		self.assertEqual(summary["files_downloaded"], len(self.state.all_letters()))
+
+	def test_the_pdf_and_the_thumbnail_are_both_attached_to_the_letter(self):
+		self.state.content_override.clear()
+		sync_letters()
+		doc = self.letter_doc("inbox-1")
+
+		attached = frappe.get_all(
+			"File", filters={"attached_to_name": doc.name}, fields=["file_url", "attached_to_field"]
+		)
+		self.assertEqual(
+			{a.attached_to_field for a in attached},
+			{"file", "thumbnail"},
+		)
+		self.assertEqual(len(attached), 2)
 
 
 class ThumbnailTest(ePostSiteTestCase):

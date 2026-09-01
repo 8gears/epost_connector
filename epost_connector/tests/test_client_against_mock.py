@@ -13,6 +13,7 @@ import re
 import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import ClassVar
 
 import requests
 
@@ -203,6 +204,71 @@ class QueryContractTest(MockServerTestCase):
 		unread = sum(1 for x in self.state.inbox if x["readStatus"] == "UNREAD")
 		self.assertEqual(client.get_unread_count(), unread)
 
+	def test_the_unread_count_is_also_read_from_a_count_object(self):
+		"""spec:11815 says a bare integer; a reference client saw {"count": n}.
+
+		Neither is confirmable from here, so both have to work — and the failure
+		if only one did would be a TypeError on a number, not a clear message.
+		"""
+		self.state.count_as_object = True
+		client = self.client()
+		unread = sum(1 for x in self.state.inbox if x["readStatus"] == "UNREAD")
+
+		self.assertEqual(client.get_unread_count(), unread)
+
+	def test_a_listing_inside_an_envelope_is_not_read_as_an_empty_letterbox(self):
+		"""The spec says a bare array. A service that grew a wrapper must not
+		make every letter disappear — that reads as "the letterbox is empty",
+		which is the one wrong answer a sync acts on destructively."""
+		for key in ("letters", "content", "items", "data"):
+			with self.subTest(envelope=key):
+				self.state.list_envelope = key
+				client = self.client()
+
+				self.assertEqual(len(client.list_letters()), len(self.state.inbox))
+
+	def test_an_unrecognised_envelope_is_an_error_rather_than_an_empty_list(self):
+		self.state.list_envelope = "payload"
+		client = self.client()
+
+		with self.assertRaises(ePostAPIError) as caught:
+			client.list_letters()
+		self.assertIn("Expected a JSON array", str(caught.exception))
+
+	def test_the_default_page_size_asks_for_the_documented_maximum(self):
+		"""48 is the API's default; asking for it would page 21x more often."""
+		self.assertEqual(ePostClient.DEFAULT_PAGE_SIZE, 1000)
+		self.assertEqual(ePostClient.MAX_PAGE_SIZE, 1000)
+
+		self.client().list_letters()
+		_m, _p, query = self.state.calls_to("/epost/v2/letters")[0]
+		self.assertEqual(query["limit"], ["1000"])
+
+
+class SearchTest(MockServerTestCase):
+	def test_a_search_finds_letters_by_a_word_in_them(self):
+		client = self.client()
+
+		hits = client.search_letters("Kontoauszug")
+
+		self.assertEqual([x["id"] for x in hits], ["inbox-2"])
+
+	def test_the_search_term_is_sent_under_both_names_the_sources_disagree_on(self):
+		"""spec:11974 calls it `value`; a working reference client sends
+		`keyword`. Sending both is the only option that cannot be wrong."""
+		client = self.client()
+		client.search_letters("Kontoauszug")
+
+		_m, _p, query = self.state.calls_to("/epost/v2/letters/search")[0]
+		self.assertEqual(query["value"], ["Kontoauszug"])
+		self.assertEqual(query["keyword"], ["Kontoauszug"])
+
+	def test_the_search_is_a_get(self):
+		client = self.client()
+		client.search_letters("anything")
+
+		self.assertEqual({m for m, _p, _q in self.state.calls_to("/epost/v2/letters/search")}, {"GET"})
+
 	def test_a_single_letter_comes_back_as_an_object(self):
 		client = self.client()
 		self.assertEqual(client.get_letter("inbox-1")["id"], "inbox-1")
@@ -384,6 +450,36 @@ class RedactionTest(MockServerTestCase):
 		self.assertNotIn(ACCESS_TOKEN, message)
 		self.assertIn("[redacted]", message)
 
+	def test_the_bearer_token_is_redacted_and_not_only_the_password(self):
+		client = self.client()
+		client.authenticate()
+
+		with self.assertRaises(ePostAPIError) as caught:
+			client.get_letter(mock_epost.ECHO_SECRET_LETTER)
+
+		# The message quotes both; neither may survive into an ePost Sync Log row.
+		self.assertNotIn(client.token.access_token, str(caught.exception))
+
+	def test_a_short_password_is_left_alone_rather_than_mangling_the_message(self):
+		"""Blanking every occurrence of a four-character secret would replace
+		ordinary runs of letters elsewhere in the text and protect nothing: the
+		value is too short to be worth hiding and too short to match uniquely."""
+		client = self._client_with_password("dog")
+
+		self.assertEqual(client._redact("the dogged gateway rejected it"), "the dogged gateway rejected it")
+
+	def test_the_length_at_which_redaction_starts_is_eight_characters(self):
+		for secret, expected in (("1234567", False), ("12345678", True)):
+			with self.subTest(secret=secret):
+				client = self._client_with_password(secret)
+
+				self.assertEqual("[redacted]" in client._redact(f"sent password={secret}"), expected)
+
+	def _client_with_password(self, password: str) -> ePostClient:
+		client = ePostClient("nobody@example.com", password, base_url=self.mock.base_url)
+		self.addCleanup(client.session.close)
+		return client
+
 
 class ReadOnlySurfaceTest(MockServerTestCase):
 	"""If any of these fail, the app can mutate the letterbox n8n owns."""
@@ -478,7 +574,9 @@ class _Recorder(BaseHTTPRequestHandler):
 	"""Stands in for the letterbox and records the verb and body that arrived."""
 
 	protocol_version = "HTTP/1.1"
-	received: list[tuple[str, str, str]] = []
+	#: Shared across handler threads on purpose — one request per test, and the
+	#: assertion is about what arrived here at all.
+	received: ClassVar[list[tuple[str, str, str]]] = []
 
 	def log_message(self, *args) -> None:
 		pass
@@ -490,9 +588,14 @@ class _Recorder(BaseHTTPRequestHandler):
 		self.send_header("Content-Length", "0")
 		self.end_headers()
 
-	do_GET = lambda self: self._record("GET")  # noqa: E731
-	do_POST = lambda self: self._record("POST")  # noqa: E731
-	do_PUT = lambda self: self._record("PUT")  # noqa: E731
+	def do_GET(self) -> None:
+		self._record("GET")
+
+	def do_POST(self) -> None:
+		self._record("POST")
+
+	def do_PUT(self) -> None:
+		self._record("PUT")
 
 
 class RedirectFollowingTest(unittest.TestCase):

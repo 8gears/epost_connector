@@ -33,9 +33,10 @@ function set_headline(frm) {
 
 	if (frm.doc.status === "Imported" && frm.doc.purchase_invoice) {
 		frm.dashboard.set_headline(
+			// get_form_link builds the current Desk route; a hardcoded /app/... only
+			// reaches it through a redirect, which reloads out of the SPA.
 			__("Imported as {0}.", [
-				`<a href="/app/purchase-invoice/${encodeURIComponent(frm.doc.purchase_invoice)}">
-					${frappe.utils.escape_html(frm.doc.purchase_invoice)}</a>`,
+				frappe.utils.get_form_link("Purchase Invoice", frm.doc.purchase_invoice, true),
 			]),
 			"green",
 			true

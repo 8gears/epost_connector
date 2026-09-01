@@ -121,6 +121,23 @@ class ReadOnlyContractTest(unittest.TestCase):
 
 		self.assertEqual(sorted(non_get), ["TENANTS_PATH", "TOKEN_PATH"])
 
+	def test_a_path_that_only_looks_harmless_is_still_refused(self):
+		"""The guard reads the resolved URL, not the string it was handed.
+
+		`urljoin` strips the leading slashes off the argument, so every shape
+		below reaches exactly the endpoint the shape above does. Matching on the
+		raw argument waved the first two through.
+		"""
+		for path in (
+			"/epost/v2/letters/1/read",
+			"epost/v2/letters/1/read",
+			"//epost/v2/letters/1/read",
+		):
+			with self.subTest(path=path), self.assertRaises(ePostWriteAttempt):
+				self.client._send("POST", path)
+
+		self.assertEqual(self.session.calls, [])
+
 	def test_no_state_changing_methods_exist(self):
 		forbidden = {
 			"accept_letter",

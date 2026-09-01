@@ -102,6 +102,7 @@
    "description": "Where the letter lives on ePost: INBOX, Storage, or the eArchive folder name.",
    "fieldname": "folder",
    "fieldtype": "Data",
+   "in_list_view": 1,
    "in_standard_filter": 1,
    "label": "ePost Folder",
    "read_only": 1
@@ -201,6 +202,7 @@
   {
    "fieldname": "currency",
    "fieldtype": "Link",
+   "in_list_view": 1,
    "label": "Currency",
    "options": "Currency",
    "read_only": 1
@@ -208,6 +210,7 @@
   {
    "fieldname": "amount",
    "fieldtype": "Currency",
+   "in_list_view": 1,
    "label": "Amount",
    "options": "currency",
    "read_only": 1

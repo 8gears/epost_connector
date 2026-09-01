@@ -49,6 +49,9 @@ frappe.listview_settings["ePost Letter"] = {
 		if (can_sync()) {
 			listview.page.add_inner_button(__("Sync Now"), () => sync_now(listview));
 		}
+		listview.page.add_inner_button(__("Sync Log"), () =>
+			frappe.set_route("List", "ePost Sync Log")
+		);
 
 		Object.keys(QUICK_FILTERS).forEach((label) => {
 			listview.page.add_inner_button(
@@ -105,10 +108,11 @@ function sync_now(listview) {
 		freeze: true,
 		freeze_message: __("Queueing the sync..."),
 		callback: () => {
+			// No anchor: there is no route helper for a list the way
+			// get_form_link covers documents, and the Sync Log button is one
+			// click away regardless.
 			frappe.show_alert({
-				message: __("Sync queued. Every run writes an {0}.", [
-					`<a href="/app/epost-sync-log">${__("ePost Sync Log")}</a>`,
-				]),
+				message: __("Sync queued. Every run writes an ePost Sync Log."),
 				indicator: "blue",
 			});
 			listview.refresh();

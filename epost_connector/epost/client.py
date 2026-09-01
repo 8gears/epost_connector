@@ -7,7 +7,10 @@ owns the letter lifecycle there. Marking a letter read, accepted, rejected or
 archived from here would change what that workflow sees. So:
 
   * no method for /read, /accept, /reject, /archive, /restore or DELETE exists,
-  * `_request` refuses any verb other than GET below /epost/,
+  * `_send` refuses any verb other than GET below /epost/, matching on the
+    resolved URL rather than on the path it was handed,
+  * redirects are not followed, because `requests` would follow one without
+    consulting that guard and 307/308 keep the verb and the body.
 
 which leaves POST available only for the two /core/latest/ auth endpoints.
 
@@ -22,7 +25,7 @@ import unicodedata
 from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
 import requests
 
@@ -509,9 +512,9 @@ class ePostClient:
 		headers: dict[str, str] | None = None,
 		**kwargs: Any,
 	) -> requests.Response:
-		self._guard_read_only(method, path)
-
 		url = urljoin(self.base_url + "/", path.lstrip("/"))
+		self._guard_read_only(method, url)
+
 		request_headers = {"Accept": "application/json"}
 		if authenticated and self.token:
 			request_headers["Authorization"] = f"Bearer {self.token.access_token}"
@@ -526,6 +529,14 @@ class ePostClient:
 					url,
 					headers=request_headers,
 					timeout=self.timeout,
+					# A redirect is followed by `requests` without consulting the
+					# guard above, and 307/308 keep both the verb and the body. A
+					# POST to /core/latest/token redirected below /epost/ is
+					# therefore a write to the letterbox n8n owns, carrying the
+					# password in its body to whatever host answered. Every
+					# endpoint here is a documented absolute path, so nothing is
+					# lost by refusing to be sent somewhere else.
+					allow_redirects=False,
 					**kwargs,
 				)
 			except requests.RequestException as exc:
@@ -533,25 +544,46 @@ class ePostClient:
 				response = None
 
 			if response is not None and response.status_code not in self.RETRY_STATUSES:
-				return response
+				return self._reject_redirect(response, method, url)
 
 			if attempt == self.MAX_ATTEMPTS:
 				break
 			time.sleep(self.BACKOFF_SECONDS * (2 ** (attempt - 1)))
 
 		if response is not None:
-			return response
+			return self._reject_redirect(response, method, url)
 		raise ePostAPIError(f"{method} {url} failed: {last_error}", url=url)
 
 	@staticmethod
-	def _guard_read_only(method: str, path: str) -> None:
+	def _reject_redirect(response: requests.Response, method: str, url: str) -> requests.Response:
+		"""A 3xx is `ok` to `requests`, so it has to be rejected explicitly.
+
+		Left alone it would reach `.json()` as an empty body and surface as a
+		parse error naming neither the redirect nor where it pointed.
+		"""
+		if 300 <= response.status_code < 400:
+			raise ePostAPIError(
+				f"{method} {url} was redirected to {response.headers.get('Location') or '(no Location)'}. "
+				"Refusing to follow: check the API Base URL in ePost Settings.",
+				status_code=response.status_code,
+				url=url,
+			)
+		return response
+
+	@staticmethod
+	def _guard_read_only(method: str, url: str) -> None:
 		"""Structural half of the read-only contract.
 
 		The n8n workflow owns the letter lifecycle in ePost; a write from here
 		would race it. POST stays open only for the /core/latest auth endpoints.
+
+		Takes the resolved URL, not the caller's path string: `"epost/v2/..."`
+		and `"//epost/v2/..."` both reach the same endpoint as `"/epost/v2/..."`
+		once `urljoin` is done with them, and matching on the raw argument would
+		wave them through.
 		"""
-		if path.startswith("/epost/") and method.upper() != "GET":
-			raise ePostWriteAttempt(f"Refusing {method} {path}: this app is read-only toward ePost")
+		if urlsplit(url).path.startswith("/epost/") and method.upper() != "GET":
+			raise ePostWriteAttempt(f"Refusing {method} {url}: this app is read-only toward ePost")
 
 	def _checked(self, response: requests.Response) -> requests.Response:
 		if response.ok:

@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import pathlib
 import re
+import threading
 import unittest
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import requests
 
@@ -470,6 +472,96 @@ class ReadOnlySurfaceTest(MockServerTestCase):
 			if not name.startswith("_") and callable(getattr(value, "__func__", value))
 		}
 		self.assertEqual(public, known_readers)
+
+
+class _Recorder(BaseHTTPRequestHandler):
+	"""Stands in for the letterbox and records the verb and body that arrived."""
+
+	protocol_version = "HTTP/1.1"
+	received: list[tuple[str, str, str]] = []
+
+	def log_message(self, *args) -> None:
+		pass
+
+	def _record(self, method: str) -> None:
+		length = int(self.headers.get("Content-Length") or 0)
+		type(self).received.append((method, self.path, self.rfile.read(length).decode() if length else ""))
+		self.send_response(200)
+		self.send_header("Content-Length", "0")
+		self.end_headers()
+
+	do_GET = lambda self: self._record("GET")  # noqa: E731
+	do_POST = lambda self: self._record("POST")  # noqa: E731
+	do_PUT = lambda self: self._record("PUT")  # noqa: E731
+
+
+class RedirectFollowingTest(unittest.TestCase):
+	"""A redirect must not become the write the guard exists to prevent.
+
+	`requests` follows redirects on its own and never consults
+	`_guard_read_only`, and 307/308 keep both the verb and the body. Before this
+	was closed, a token POST redirected below `/epost/` arrived at the letterbox
+	as a POST with the ePost password in its body.
+	"""
+
+	def setUp(self) -> None:
+		_Recorder.received = []
+
+		self.letterbox = ThreadingHTTPServer(("127.0.0.1", 0), _Recorder)
+		self.letterbox.daemon_threads = True
+		threading.Thread(target=self.letterbox.serve_forever, daemon=True).start()
+		self.addCleanup(self.letterbox.server_close)
+		self.addCleanup(self.letterbox.shutdown)
+
+		target = f"http://127.0.0.1:{self.letterbox.server_address[1]}/epost/v2/letters/inbox-1/read"
+
+		class _Redirector(BaseHTTPRequestHandler):
+			protocol_version = "HTTP/1.1"
+
+			def log_message(self, *args) -> None:
+				pass
+
+			def do_POST(self) -> None:
+				# 308 keeps the method and the body; 307 behaves the same.
+				self.send_response(308)
+				self.send_header("Location", target)
+				self.send_header("Content-Length", "0")
+				self.end_headers()
+
+		self.api = ThreadingHTTPServer(("127.0.0.1", 0), _Redirector)
+		self.api.daemon_threads = True
+		threading.Thread(target=self.api.serve_forever, daemon=True).start()
+		self.addCleanup(self.api.server_close)
+		self.addCleanup(self.api.shutdown)
+
+		self.client = ePostClient(
+			mock_epost.USERNAME,
+			mock_epost.PASSWORD,
+			base_url=f"http://127.0.0.1:{self.api.server_address[1]}",
+			tenant_id=TENANT_ID,
+			company_id=str(COMPANY_ID),
+		)
+		self.client.BACKOFF_SECONDS = 0
+		self.addCleanup(self.client.session.close)
+
+	def test_a_redirect_is_refused_rather_than_followed(self):
+		with self.assertRaises(ePostAPIError) as raised:
+			self.client.authenticate()
+
+		self.assertIn("redirected", str(raised.exception))
+		self.assertEqual(_Recorder.received, [])
+
+	def test_no_non_get_reaches_the_letterbox_by_way_of_a_redirect(self):
+		with self.assertRaises(ePostAPIError):
+			self.client.authenticate()
+
+		self.assertEqual([(m, p) for m, p, _ in _Recorder.received if p.startswith("/epost/")], [])
+
+	def test_the_password_does_not_travel_to_the_redirect_target(self):
+		with self.assertRaises(ePostAPIError):
+			self.client.authenticate()
+
+		self.assertNotIn(mock_epost.PASSWORD, "".join(body for _, _, body in _Recorder.received))
 
 
 class StateIsolationTest(unittest.TestCase):

@@ -54,9 +54,12 @@ function show_connection_state(frm) {
 		if (log) {
 			lines.push(
 				__("Last run {0}: {1}, {2}", [
-					`<a href="/app/epost-sync-log/${encodeURIComponent(log.name)}">${frappe.datetime.comment_when(
-						log.started_at || log.creation
-					)}</a>`,
+					frappe.utils.get_form_link(
+						"ePost Sync Log",
+						log.name,
+						true,
+						frappe.datetime.comment_when(log.started_at || log.creation)
+					),
 					__(log.status),
 					__("{0} seen, {1} new, {2} downloaded", [
 						log.letters_seen || 0,
@@ -114,9 +117,7 @@ function watch_for_log(frm, queued_at, attempts_left) {
 		if (log) {
 			frappe.show_alert({
 				message: __("Sync started: {0}", [
-					`<a href="/app/epost-sync-log/${encodeURIComponent(log.name)}">${frappe.utils.escape_html(
-						log.name
-					)}</a>`,
+					frappe.utils.get_form_link("ePost Sync Log", log.name, true),
 				]),
 				indicator: "blue",
 			});

@@ -79,6 +79,9 @@ class ePostSiteTestCase(IntegrationTestCase):
 
 		purge()
 		self.addCleanup(purge)
+
+		self._settings_before = self._snapshot_settings()
+		self.addCleanup(self._restore_settings)
 		self.configure_settings()
 
 	#: Every field on the single this class manages, with the value a test that
@@ -116,6 +119,42 @@ class ePostSiteTestCase(IntegrationTestCase):
 			}
 		)
 		settings.password = mock_epost.PASSWORD
+		settings.save(ignore_permissions=True)
+		frappe.db.commit()
+		frappe.clear_document_cache("ePost Settings", "ePost Settings")
+
+	def _snapshot_settings(self) -> dict:
+		settings = frappe.get_doc("ePost Settings")
+		snapshot = {field: settings.get(field) for field in self.SETTINGS_BASELINE}
+		snapshot.update(
+			{
+				"api_base_url": settings.api_base_url,
+				"username": settings.username,
+				"tenant_id": settings.tenant_id,
+				"company_id": settings.company_id,
+			}
+		)
+		# Read through `get_password`, because the field itself holds a
+		# placeholder and writing that back would store the placeholder.
+		snapshot["password"] = settings.get_password("password", raise_exception=False)
+		return snapshot
+
+	def _restore_settings(self) -> None:
+		"""Leave the settings the way the test found them.
+
+		`configure_settings` commits, so without this the site is left enabled
+		and pointed at a mock port that died with the test process. The hourly
+		scheduler then writes a Failed Sync Log every hour forever, Test
+		Connection fails for whoever opens the Desk next, and the app looks
+		broken to anyone who did not run the tests.
+
+		Validation is skipped: the state being restored is whatever was there
+		before, which is not this class's to judge, and `enabled` with no
+		credentials would otherwise throw on the way back.
+		"""
+		settings = frappe.get_doc("ePost Settings")
+		settings.update(self._settings_before)
+		settings.flags.ignore_validate = True
 		settings.save(ignore_permissions=True)
 		frappe.db.commit()
 		frappe.clear_document_cache("ePost Settings", "ePost Settings")

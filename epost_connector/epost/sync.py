@@ -53,6 +53,14 @@ def run_sync_now() -> dict:
 	"""Desk button: enqueue a sync so the request returns immediately."""
 	frappe.only_for(("System Manager", "Accounts Manager"))
 
+	# `is_job_enqueued` sees jobs still waiting in the queue, not one a worker
+	# has already picked up — Frappe drops the id from the queued set the moment
+	# execution starts. So this closes repeated button presses, and a press
+	# landing in the middle of the hourly run can still overlap it. The accepted
+	# residual: the letter row is safe either way, since `letter_id` is the
+	# primary key, and the cost is a duplicate File row pointing at bytes Frappe
+	# has already deduplicated. Closing it properly needs a lock inside
+	# `sync_letters`, not a job id.
 	if is_job_enqueued(SYNC_JOB_ID):
 		return {"job_id": SYNC_JOB_ID, "already_running": True}
 

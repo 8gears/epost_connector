@@ -174,13 +174,17 @@ Status is a coloured indicator: New is orange, Downloaded blue, Analyzed purple,
 Imported green, Ignored grey. A letter whose last sync failed shows a red **Sync
 Error** regardless of its status, because that is the one that needs a person.
 
-`Received At` is shown as an age; hover for the timestamp. `Amount` carries the
-currency symbol with it, so there is no separate currency column. Every row with
-a PDF gets a **PDF** button that opens the scan without leaving the list.
+`Received At` is shown as an age; hover for the timestamp. `ePost Folder` says
+where the letter lives on ePost, which is the one extra fact the sync always
+observes for every letter. Every row with a PDF gets a **PDF** button that opens
+the scan without leaving the list.
 
-`ePost Folder` is a filter rather than a column — the column budget went to the
-amount, which is the number triage is actually done on. Add it back per user
-under **List Settings** if you work by folder.
+There is deliberately **no `Amount` column**. The only extractor this app ships
+is the no-op (see *Extraction* below), so in the shipped configuration every
+letter's amount is `0` — and a Currency column cannot be empty, so those zeroes
+render with a currency symbol taken from the site default. That is a
+denomination nobody read off the document, on every row. Add the column under
+**List Settings** once a real extractor is filling the field.
 
 **Quick Filters** holds the views worth having: New Letters, To Import, Sync
 Errors, Imported, Everything. The default view hides `Ignored` letters, and

@@ -131,32 +131,39 @@ class LetterSync:
 			self.errors.append(f"Letter without an id skipped: {frappe.as_json(payload)[:200]}")
 			return
 
-		# Metadata and content are committed separately: a letter whose PDF the
-		# gateway will not serve is still worth having as a row, with the reason
-		# recorded on it.
-		letter = self._guarded(letter_id, lambda: self._upsert(letter_id, payload, folder))
-		if letter is None or letter.status in TERMINAL_STATUSES:
+		# Metadata, content and extraction are committed separately. A letter
+		# whose PDF the gateway will not serve is still worth having as a row
+		# with the reason on it, and a downloaded PDF is worth keeping even when
+		# the extractor that ran next threw — sharing one savepoint would roll
+		# the download back and the next run would repeat it, forever.
+		ok, letter = self._guarded(letter_id, lambda: self._upsert(letter_id, payload, folder))
+		if not ok or letter.status in TERMINAL_STATUSES:
 			return
 
-		self._guarded(letter_id, lambda: self._fetch_and_analyze(letter))
+		ok, _ = self._guarded(letter_id, lambda: self.download(letter))
+		if not ok:
+			return
 
-	def _fetch_and_analyze(self, letter) -> None:
-		self.download(letter)
-		self._analyze(letter)
+		self._guarded(letter_id, lambda: self._analyze(letter))
 
-	def _guarded(self, letter_id: str, action):
-		"""Run `action` in its own savepoint. One bad letter costs one letter."""
+	def _guarded(self, letter_id: str, action) -> tuple[bool, Any]:
+		"""Run `action` in its own savepoint. One bad letter costs one letter.
+
+		Returns `(completed, result)`. The flag is separate from the result
+		because an action that legitimately returns `None` must not read as a
+		failure.
+		"""
 		savepoint = f"epost_{frappe.generate_hash(length=8)}"
 		frappe.db.savepoint(savepoint)
 		try:
 			result = action()
 			frappe.db.commit()
-			return result
+			return True, result
 		except Exception as exc:
 			frappe.db.rollback(save_point=savepoint)
 			self.errors.append(f"{letter_id}: {exc}")
 			self._record_letter_error(letter_id, exc)
-			return None
+			return False, None
 
 	def _upsert(self, letter_id: str, payload: dict, folder: str):
 		values = self._metadata(payload, folder)
@@ -198,18 +205,35 @@ class LetterSync:
 		self._download_thumbnail(letter)
 
 	def _download_thumbnail(self, letter) -> None:
+		"""Attach the preview image, or give up quietly.
+
+		Every failure is swallowed, not just the ones from ePost. The bytes go
+		into an Attach Image field, so Frappe hands them to an image library
+		that raises on anything it cannot decode — an error page served with
+		200, a truncated JPEG, a format it was not built with. Letting that out
+		would roll the caller's savepoint back and take the letter's *PDF* with
+		it, on every run, over a picture nothing depends on.
+		"""
 		if letter.thumbnail:
 			return
+
+		# Its own savepoint, so a File row that was inserted before the image
+		# library rejected its contents does not survive as a half-attachment.
+		savepoint = f"epost_thumb_{frappe.generate_hash(length=8)}"
+		frappe.db.savepoint(savepoint)
 		try:
 			content = self.client.get_letter_thumbnail(letter.letter_id)
-		except ePostError:
-			return  # Thumbnails are cosmetic; never fail a sync over one.
-		if not content:
-			return
-		file_doc = self._attach(
-			letter, f"{_safe_name(letter.letter_id)}-thumb.jpg", content, field="thumbnail"
-		)
-		letter.db_set("thumbnail", file_doc.file_url, update_modified=False)
+			if not content:
+				return
+			file_doc = self._attach(
+				letter, f"{_safe_name(letter.letter_id)}-thumb.jpg", content, field="thumbnail"
+			)
+			letter.db_set("thumbnail", file_doc.file_url, update_modified=False)
+		except Exception:
+			frappe.db.rollback(save_point=savepoint)
+			frappe.log_error(
+				title=f"ePost thumbnail skipped for {letter.letter_id}", message=frappe.get_traceback()
+			)
 
 	def _analyze(self, letter) -> None:
 		if analyze_letter(letter):

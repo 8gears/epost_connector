@@ -14,12 +14,17 @@ owns the letter lifecycle there. This app must never race it, so it never calls 
 state-changing ePost endpoint: no `/read`, `/accept`, `/reject`, `/archive`,
 `/restore`, no `DELETE`.
 
-That is enforced in two places, not just documented:
+That is enforced in three places, not just documented:
 
 - `epost/client.py` contains **no method** that would perform such a call.
 - `ePostClient._guard_read_only` raises `ePostWriteAttempt` on any verb other than
   `GET` below `/epost/`. `POST` survives only for the two `/core/latest/` auth
-  endpoints.
+  endpoints. It matches on the *resolved* URL, not on the path it was handed,
+  because `urljoin` turns `epost/v2/…` and `//epost/v2/…` into the same endpoint.
+- **Redirects are not followed.** `requests` follows one without consulting that
+  guard, and 307/308 keep the verb *and* the body, so a redirected token `POST`
+  would arrive below `/epost/` as a write carrying the password. A 3xx is
+  reported as an error naming the `Location` instead.
 
 **ePost is the source of truth. `ePost Letter` rows are copies.** The sync is
 one-way and idempotent, keyed on the ePost letter id, so re-running converges

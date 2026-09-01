@@ -554,17 +554,17 @@ class ePostClient:
 			return self._reject_redirect(response, method, url)
 		raise ePostAPIError(f"{method} {url} failed: {last_error}", url=url)
 
-	@staticmethod
-	def _reject_redirect(response: requests.Response, method: str, url: str) -> requests.Response:
+	def _reject_redirect(self, response: requests.Response, method: str, url: str) -> requests.Response:
 		"""A 3xx is `ok` to `requests`, so it has to be rejected explicitly.
 
 		Left alone it would reach `.json()` as an empty body and surface as a
 		parse error naming neither the redirect nor where it pointed.
 		"""
 		if 300 <= response.status_code < 400:
+			location = self._redact(response.headers.get("Location") or "(no Location header)")
 			raise ePostAPIError(
-				f"{method} {url} was redirected to {response.headers.get('Location') or '(no Location)'}. "
-				"Refusing to follow: check the API Base URL in ePost Settings.",
+				f"{method} {url} was redirected to {location[:500]}. Refusing to follow: "
+				"check the API Base URL in ePost Settings.",
 				status_code=response.status_code,
 				url=url,
 			)

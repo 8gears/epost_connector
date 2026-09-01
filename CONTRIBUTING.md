@@ -1,6 +1,6 @@
 # Contributing
 
-Four things about this repo that cost someone hours to find out. None of them
+Five things about this repo that cost someone hours to find out. None of them
 announce themselves — each one fails silently, or fails somewhere far from the
 cause.
 
@@ -20,6 +20,25 @@ this never bites anyone working through the UI.
 
 Proven by resetting the database row's `modified` to 2020 and re-running a
 plain `bench migrate` — the content then synced.
+
+## A fixture may omit a mandatory field, and migrate will not mind
+
+`Workspace.type` is a required Select in Frappe 16 —
+`Workspace\nLink\nURL`, default `Workspace`, `reqd: 1`
+(`frappe/desk/doctype/workspace/workspace.json`). Our `epost.json` did not have
+it. Migrate imported the workspace anyway and left `type` NULL, because fixture
+import inserts the record rather than validating it the way a save would.
+
+Nothing complains until something *saves* that workspace — rearranging a block
+in the Desk editor, or a REST `PUT` — and then it dies with
+`MandatoryError: Value missing for Workspace: Type` on a document nobody
+believes they changed. Fixed in 62d7b49 by putting `"type": "Workspace"` in the
+file; the same save that failed before then succeeded.
+
+Same shape as the `modified` trap above, and the same lesson: a fixture JSON is
+not validated on the way in, so a field the doctype requires can be missing for
+as long as nobody saves. When hand-writing one, check the doctype for `reqd: 1`
+fields rather than copying an existing file and trusting it.
 
 ## The app directory looks empty from the host, and that means nothing
 

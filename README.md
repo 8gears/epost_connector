@@ -174,8 +174,13 @@ Status is a coloured indicator: New is orange, Downloaded blue, Analyzed purple,
 Imported green, Ignored grey. A letter whose last sync failed shows a red **Sync
 Error** regardless of its status, because that is the one that needs a person.
 
-`Received At` is shown as an age; hover for the timestamp. Every row with a PDF
-gets a **PDF** button that opens the scan without leaving the list.
+`Received At` is shown as an age; hover for the timestamp. `Amount` carries the
+currency symbol with it, so there is no separate currency column. Every row with
+a PDF gets a **PDF** button that opens the scan without leaving the list.
+
+`ePost Folder` is a filter rather than a column — the column budget went to the
+amount, which is the number triage is actually done on. Add it back per user
+under **List Settings** if you work by folder.
 
 **Quick Filters** holds the views worth having: New Letters, To Import, Sync
 Errors, Imported, Everything. The default view hides `Ignored` letters, and

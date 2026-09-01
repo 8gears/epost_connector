@@ -80,6 +80,14 @@ jobs:
           python-version: "3.14"
           cache: pip
 
+      - uses: actions/setup-node@v4
+        with:
+          # frappe-framework's package.json declares engines.node >= 24, and
+          # `bench init` runs `yarn install --check-files`, which refuses to
+          # proceed on the runner's default 22. Matches the NODE_VERSION the
+          # production image is built with.
+          node-version: "24"
+
       - name: System packages
         # libmariadb-dev builds the database driver, wkhtmltopdf is what Frappe
         # prints with, and Frappe refuses to start without it. Neither is on the

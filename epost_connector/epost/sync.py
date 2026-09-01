@@ -191,9 +191,12 @@ class LetterSync:
 		content = self.client.get_letter_content(letter.letter_id)
 		file_doc = self._attach(letter, self._pdf_filename(letter), content)
 
-		# Inserting a File with `attached_to_field` writes that field on the
-		# parent and bumps its `modified`, so saving the stale in-memory doc
-		# would raise TimestampMismatchError.
+		# Re-read before writing. Frappe 16 does *not* write `attached_to_field`
+		# back onto the parent — measured, and pinned by a test — so this is not
+		# the TimestampMismatchError guard it was thought to be. It stays because
+		# inserting a File runs hooks this app does not control, and any of them
+		# touching the letter would make the in-memory copy stale; the cost is
+		# one read per downloaded letter, once.
 		letter.reload()
 
 		letter.file = file_doc.file_url

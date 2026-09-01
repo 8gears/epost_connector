@@ -41,6 +41,8 @@ ignore = [
 "epost_connector/epost_connector/doctype/*/*.py" = ["N801"]
 "epost_connector/epost/client.py" = ["N801", "N818"]
 "epost_connector/epost/exceptions.py" = ["N801", "N818"]
+# Test helpers keep the app's own `ePost` prefix so they read like what they test.
+"epost_connector/tests/*.py" = ["N801"]
 
 [tool.ruff.format]
 quote-style = "double"

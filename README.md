@@ -5,7 +5,7 @@ ERPNext. It lists received letters, downloads each PDF into a private Frappe Fil
 lets you filter, sort, tag and preview them in Desk, and creates **draft** Purchase
 Invoices from them.
 
-Frappe v16 / ERPNext v16, Python 3.11+.
+Frappe v16 / ERPNext v16, Python 3.14 (what Frappe v16 requires).
 
 ## The one rule: this app is read-only toward ePost
 

@@ -4,7 +4,7 @@ authors = [
     { name = "8gears", email = "vadim@8gears.com" },
 ]
 description = "Sync the Swiss Post ePost / KLARA digital letterbox into ERPNext"
-requires-python = ">=3.11"
+requires-python = ">=3.14"
 readme = "README.md"
 dynamic = ["version"]
 dependencies = []
@@ -22,6 +22,9 @@ erpnext = ">=16.0.0,<17.0.0"
 
 [tool.ruff]
 line-length = 110
+# Deliberately behind `requires-python`. Raising this lets the UP rules demand
+# rewrites to newer syntax across the whole app, which is a change to make on
+# purpose rather than as a side effect of correcting the interpreter version.
 target-version = "py311"
 
 [tool.ruff.lint]

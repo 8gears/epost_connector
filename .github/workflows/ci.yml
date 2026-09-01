@@ -74,7 +74,10 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          # Frappe v16 declares requires-python = ">=3.14,<3.15"; the bench
+          # venv is built with this interpreter, so anything else fails to
+          # install frappe at all.
+          python-version: "3.14"
           cache: pip
 
       - name: System packages

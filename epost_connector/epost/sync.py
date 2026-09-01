@@ -56,11 +56,20 @@ def run_sync_now() -> dict:
 	# `is_job_enqueued` sees jobs still waiting in the queue, not one a worker
 	# has already picked up — Frappe drops the id from the queued set the moment
 	# execution starts. So this closes repeated button presses, and a press
-	# landing in the middle of the hourly run can still overlap it. The accepted
-	# residual: the letter row is safe either way, since `letter_id` is the
-	# primary key, and the cost is a duplicate File row pointing at bytes Frappe
-	# has already deduplicated. Closing it properly needs a lock inside
-	# `sync_letters`, not a job id.
+	# landing in the middle of the hourly run can still overlap it.
+	#
+	# That residual is deliberate, not merely unfinished. It costs one duplicate
+	# File row, against bytes Frappe has already deduplicated on content_hash,
+	# on a letter row the primary key protects: nothing is lost and nothing is
+	# double-booked. A lock inside `sync_letters` would buy that back at the
+	# price of a worse failure — a worker killed mid-sync leaves the lock held
+	# and syncing stops silently until somebody notices the Sync Log went quiet.
+	# For a read-only copier that is the wrong trade.
+	#
+	# If it ever must close: TTL shorter than the hourly cadence so a dead worker
+	# self-heals, release in a `finally`, and write a Sync Log row when the lock
+	# is refused so a stuck lock is visible rather than silent. Not a naive
+	# `setnx`, which has none of those three.
 	if is_job_enqueued(SYNC_JOB_ID):
 		return {"job_id": SYNC_JOB_ID, "already_running": True}
 

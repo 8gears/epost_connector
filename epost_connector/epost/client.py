@@ -210,7 +210,12 @@ class ePostClient:
 
 		def emit(payload: dict, folder: str) -> Iterator[tuple[dict, str]]:
 			letter_id = str(payload.get("id") or "")
-			if letter_id and letter_id not in seen:
+			if not letter_id:
+				# Nothing can be stored under no id, but swallowing it here would
+				# lose a letter and still report a clean run. It is passed on so
+				# the caller records it; the sync has a branch for exactly this.
+				yield payload, folder
+			elif letter_id not in seen:
 				seen.add(letter_id)
 				yield payload, folder
 

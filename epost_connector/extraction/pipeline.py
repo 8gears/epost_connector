@@ -59,9 +59,12 @@ def _apply(letter: Any, result: ExtractionResult) -> None:
 	letter.extraction_confidence = flt(result.confidence)
 	letter.extraction_raw = frappe.as_json(result.raw or {})
 
-	# `currency` is a Link; an unknown code would fail validation on save.
-	if result.currency and frappe.db.exists("Currency", result.currency):
-		letter.currency = result.currency
+	# Assigned unconditionally like every other field above, so the letter shows
+	# what this extractor found rather than what a previous run left behind.
+	# `currency` is a Link, so a code ERPNext has no Currency for is dropped:
+	# keeping it would fail the save and lose the rest of the result with it.
+	known = bool(result.currency) and frappe.db.exists("Currency", result.currency)
+	letter.currency = result.currency if known else None
 
 
 def _as_date(value: Any):

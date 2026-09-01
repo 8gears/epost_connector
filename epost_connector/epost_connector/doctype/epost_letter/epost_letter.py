@@ -12,6 +12,15 @@ from epost_connector.epost.sync import STATUS_RANK
 
 
 class ePostLetter(Document):
+	def before_insert(self) -> None:
+		# `Document.__init__` fills missing Link fields from the site and user
+		# defaults, so a letter nobody has read yet arrives already carrying the
+		# default currency. Every field in the Extraction section has to mean
+		# "this is what was read off the document": the importer goes on to
+		# report a currency here as detected on the letter, and it would be
+		# saying that about a PDF nothing has opened.
+		self.currency = None
+
 	def validate(self) -> None:
 		self._block_status_regression()
 

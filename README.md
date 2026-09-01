@@ -36,8 +36,9 @@ rather than duplicating.
 ePost API (api.epost.ch)
 	│  GET only — inbox listing AND the eArchive folders
 	▼
-epost/client.py ......... auth (password + refresh grant), pagination, retries,
-	│                     PDF validation, credential redaction
+epost/client.py ......... auth (X-API-KEY, or password + refresh grant),
+	│                     pagination, retries, PDF validation,
+	│                     credential redaction
 	▼
 epost/sync.py ........... upsert ePost Letter, download PDF -> private File,
 	│                     write one ePost Sync Log per run.  Hourly, and on demand.
@@ -121,12 +122,20 @@ bench --site <site> migrate
 
 ## Configuration
 
-### 1. Set an ePost API password
+### 1. Get a credential
 
-The Klara/ePost web login may use SSO; the API needs a real password on the
-account. Set one at:
+The API documents two independent security schemes, and either one is enough:
 
-`login.epost.ch/auth/realms/klara/account` → **Authentication** → set password.
+- **An API key**, sent as `X-API-KEY`. Issued in the ePost portal. This is the
+  one to use if the account has **2FA** enabled, because 2FA makes the password
+  grant fail outright and no password will get you in. A key needs no tenant, no
+  token and no `/core/latest` call at all.
+- **A username and password.** The Klara/ePost web login may use SSO, so the API
+  needs a real password set on the account:
+  `login.epost.ch/auth/realms/klara/account` → **Authentication** → set password.
+
+Configured together, both are sent: the key on every request and the token
+beside it. A grant that then fails is logged and the run carries on with the key.
 
 ### 2. Fill in ePost Settings
 
@@ -136,13 +145,15 @@ Desk → **ePost Settings** (or the ePost workspace):
 |---|---|
 | `Enabled` | Off by default. When off the hourly job does nothing; manual syncs still run. |
 | `API Base URL` | `https://api.epost.ch` |
-| `Username` / `Password` | The ePost login and the password from step 1. Stored in Frappe's encrypted `__Auth` table. |
-| `Tenant ID` / `Company ID` | Press **Fetch Tenants** after saving. One tenant fills them in; several open a picker. A token is only ever valid for one tenant/company pair. |
+| `API Key` | Sent as `X-API-KEY`. Takes precedence, and on its own is a complete credential — the fields below can then stay empty. Stored in Frappe's encrypted `__Auth` table. |
+| `Username` / `Password` | The ePost login and the password from step 1. Optional when an API Key is set. Stored in Frappe's encrypted `__Auth` table. |
+| `Tenant ID` / `Company ID` | Press **Fetch Tenants** after saving; needs the username and password, since the credentials are that call's body. One tenant fills them in, several open a picker. A token is only ever valid for one tenant/company pair. Not used by key-only auth. |
 | `Extractor` | `None` by default. See *Extraction* below. |
 | `Company`, `Default Item`, `Default Expense Account`, `Default Cost Center` | Purchase Invoice defaults. |
 
-Press **Test Connection** to authenticate and read the unread count. That is the
-only "does it work" check that touches the live API, and it is a `GET`.
+Press **Test Connection** to authenticate and read the unread count. It names
+which scheme answered — *API key*, *password grant* or *both*. That is the only
+"does it work" check that touches the live API, and it is a `GET`.
 
 ### 3. Sync
 

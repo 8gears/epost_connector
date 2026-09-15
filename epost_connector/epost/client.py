@@ -2,7 +2,7 @@
 
 HARD CONSTRAINT — this client is read-only toward ePost.
 
-An n8n workflow (`7sytwdFCRMkgSED9`) processes the same letterbox in parallel and
+Another system may process the same letterbox in parallel and
 owns the letter lifecycle there. Marking a letter read, accepted, rejected or
 archived from here would change what that workflow sees. So:
 

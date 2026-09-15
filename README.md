@@ -9,7 +9,7 @@ Frappe v16 / ERPNext v16, Python 3.14 (what Frappe v16 requires).
 
 ## The one rule: this app is read-only toward ePost
 
-An n8n workflow (`7sytwdFCRMkgSED9`) processes the same letterbox in parallel and
+Another system may process the same letterbox in parallel (in our deployment an n8n workflow does) and
 owns the letter lifecycle there. This app must never race it, so it never calls a
 state-changing ePost endpoint: no `/read`, `/accept`, `/reject`, `/archive`,
 `/restore`, no `DELETE`.
@@ -276,7 +276,7 @@ This app runs **alongside** the existing systems; it replaces nothing.
 
 - **Source of truth:** the ePost letterbox. ERPNext rows are copies.
 - **Direction:** one-way, ePost → ERPNext. Nothing is written back, ever.
-- **The n8n workflow `7sytwdFCRMkgSED9` keeps running, untouched.** This app does
+- **Any other system on the same letterbox keeps running, untouched.** This app does
   not mark letters read, so it does not change what that workflow sees.
 - **How to stop:** untick `Enabled` in ePost Settings, or uninstall the app. Both
   leave ePost and the n8n workflow intact and authoritative. Nothing this app
@@ -320,3 +320,9 @@ false regardless of the diffs — a clean diff over missing data is not agreemen
 ## License
 
 MIT
+
+## Deployment
+
+See [docs/INSTALL.md](docs/INSTALL.md) to install and configure the app, and
+[SECURITY.md](SECURITY.md) for how credentials and downloaded documents are handled.
+

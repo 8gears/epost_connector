@@ -200,8 +200,9 @@ class RuleTest(BookingTestCase):
 			self.rule(apply_when=BEFORE_HISTORY, supplier=KNOWN)
 
 	def test_a_rule_needs_a_company_because_its_targets_have_one(self):
-		with self.assertRaises(frappe.MandatoryError):
+		with self.assertRaises(frappe.ValidationError) as caught:
 			self.rule(apply_when=BEFORE_HISTORY, company=None, expense_account=self.acct_a)
+		self.assertIn("Company", str(caught.exception))
 
 
 class LlmFallbackTest(BookingTestCase):

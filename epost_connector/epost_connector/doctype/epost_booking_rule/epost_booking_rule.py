@@ -12,6 +12,11 @@ from frappe.model.document import Document
 
 class ePostBookingRule(Document):
 	def validate(self) -> None:
+		# Frappe checks mandatory fields after `validate`, so without this the
+		# first target check would report "belongs to X, not None".
+		if not self.company:
+			frappe.throw(_("Set a Company: accounts, VAT templates and cost centers belong to one"))
+
 		if self.foreign_only and self.domestic_only:
 			frappe.throw(_("A rule cannot be both foreign-only and domestic-only"))
 

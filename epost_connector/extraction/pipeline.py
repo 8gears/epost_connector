@@ -35,6 +35,7 @@ def analyze_letter(letter: Any, force: bool = False) -> bool:
 
 	_apply(letter, result)
 	letter.status = "Analyzed"
+	_suggest_booking(letter)
 	letter.save(ignore_permissions=True)
 	return True
 
@@ -49,6 +50,59 @@ def analyze(letter_name: str) -> dict:
 	return {"extracted": extracted, "status": letter.status}
 
 
+#: One id for every backfill, so a second press is recognised as the same work.
+ANALYZE_JOB_ID = "epost-analyze-all"
+
+
+@frappe.whitelist()
+def analyze_all(limit: int | None = None) -> dict:
+	"""Desk button: extract every downloaded letter that has not been analysed yet.
+
+	The hourly sync only extracts letters it downloads in that run, so letters
+	synced before an extractor was configured need this once. `limit` runs the
+	newest few first, to check a model on a sample before paying for the rest.
+	"""
+	frappe.only_for(("System Manager", "Accounts Manager"))
+	from frappe.utils.background_jobs import is_job_enqueued
+
+	if is_job_enqueued(ANALYZE_JOB_ID):
+		return {"job_id": ANALYZE_JOB_ID, "already_running": True}
+
+	frappe.enqueue(
+		"epost_connector.extraction.pipeline.analyze_downloaded",
+		queue="long",
+		timeout=7200,
+		job_id=ANALYZE_JOB_ID,
+		deduplicate=True,
+		limit=int(limit) if limit else None,
+	)
+	return {"job_id": ANALYZE_JOB_ID, "already_running": False}
+
+
+def analyze_downloaded(limit: int | None = None) -> dict:
+	"""Analyse `Downloaded` letters newest first, committing after each one."""
+	names = frappe.get_all(
+		"ePost Letter",
+		filters={"status": "Downloaded", "file": ("is", "set")},
+		pluck="name",
+		order_by="received_at desc",
+		limit=limit or 0,
+	)
+	counts = {"letters": len(names), "analyzed": 0, "empty": 0, "failed": 0}
+	for name in names:
+		savepoint = f"epost_{frappe.generate_hash(length=8)}"
+		frappe.db.savepoint(savepoint)
+		try:
+			extracted = analyze_letter(frappe.get_doc("ePost Letter", name))
+			frappe.db.commit()
+			counts["analyzed" if extracted else "empty"] += 1
+		except Exception:
+			frappe.db.rollback(save_point=savepoint)
+			frappe.log_error("ePost: analysis failed", reference_doctype="ePost Letter", reference_name=name)
+			counts["failed"] += 1
+	return counts
+
+
 def _apply(letter: Any, result: ExtractionResult) -> None:
 	letter.vendor_name = result.vendor_name
 	letter.invoice_number = result.invoice_number
@@ -58,6 +112,16 @@ def _apply(letter: Any, result: ExtractionResult) -> None:
 	letter.vat_amount = flt(result.vat_amount)
 	letter.extraction_confidence = flt(result.confidence)
 	letter.extraction_raw = frappe.as_json(result.raw or {})
+	letter.document_kind = result.document_kind
+	letter.vendor_tax_id = result.vendor_tax_id
+	letter.vendor_country = (
+		result.vendor_country
+		if result.vendor_country and frappe.db.exists("Country", result.vendor_country)
+		else None
+	)
+	letter.iban = result.iban
+	letter.qr_reference = result.qr_reference
+	letter.net_amount = flt(result.net_amount) if result.net_amount is not None else None
 
 	# Assigned unconditionally like every other field above, so the letter shows
 	# what this extractor found rather than what a previous run left behind.
@@ -65,6 +129,21 @@ def _apply(letter: Any, result: ExtractionResult) -> None:
 	# keeping it would fail the save and lose the rest of the result with it.
 	known = bool(result.currency) and frappe.db.exists("Currency", result.currency)
 	letter.currency = result.currency if known else None
+
+
+def _suggest_booking(letter: Any) -> None:
+	"""Best effort: a failed suggestion must not cost the extraction it follows.
+
+	The suggestion only reads, so there is nothing to roll back.
+	"""
+	from epost_connector.booking.letter import suggest_for_letter
+
+	try:
+		suggest_for_letter(letter)
+	except Exception:
+		frappe.log_error(
+			"ePost: booking suggestion failed", reference_doctype="ePost Letter", reference_name=letter.name
+		)
 
 
 def _as_date(value: Any):

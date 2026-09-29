@@ -96,6 +96,9 @@ class ePostSiteTestCase(IntegrationTestCase):
 		"default_item_code": None,
 		"default_expense_account": None,
 		"default_cost_center": None,
+		"flow_model": None,
+		"booking_use_llm": 0,
+		"mixed_taxes_template": None,
 		"last_sync_at": None,
 		"last_sync_status": None,
 	}

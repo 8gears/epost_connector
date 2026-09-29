@@ -54,6 +54,9 @@ function add_actions(frm) {
 	if (frm.doc.file) {
 		frm.add_custom_button(__("Analyze"), () => analyze(frm), __("Actions"));
 	}
+	if (!terminal && (frm.doc.amount || frm.doc.net_amount)) {
+		frm.add_custom_button(__("Suggest Booking"), () => suggest_booking(frm), __("Actions"));
+	}
 	if (!terminal) {
 		frm.add_custom_button(__("Mark as Ignored"), () => ignore(frm), __("Actions"));
 	}
@@ -171,6 +174,43 @@ function analyze(frm) {
 	});
 }
 
+function suggest_booking(frm) {
+	frappe.call({
+		method: "epost_connector.booking.letter.refresh",
+		args: { letter_name: frm.doc.name },
+		freeze: true,
+		freeze_message: __("Suggesting accounts and VAT..."),
+		callback: () => frm.reload_doc(),
+	});
+}
+
+function booking_lines_html(frm) {
+	let suggestion = {};
+	try {
+		suggestion = JSON.parse(frm.doc.booking_suggestion || "{}");
+	} catch (e) {
+		return "";
+	}
+	const lines = suggestion.lines || [];
+	if (!lines.length) {
+		return "";
+	}
+	const esc = frappe.utils.escape_html;
+	const rows = lines
+		.map(
+			(line) => `<tr>
+				<td class="text-right">${format_currency(line.net, frm.doc.currency)}</td>
+				<td>${esc(line.expense_account || __("(open)"))}</td>
+				<td>${esc(line.item_tax_template || __("(open)"))}</td>
+				<td>${esc(line.account_source)} ${line.confidence ? `(${Math.round(line.confidence * 100)}%)` : ""}</td>
+			</tr>`
+		)
+		.join("");
+	return `<table class="table table-bordered small">
+		<thead><tr><th>${__("Net")}</th><th>${__("Account")}</th><th>${__("VAT Template")}</th><th>${__("Source")}</th></tr></thead>
+		<tbody>${rows}</tbody></table>`;
+}
+
 function ignore(frm) {
 	frappe.confirm(
 		__("Ignore letter {0}? It stays in ERPNext but drops out of the import queue.", [
@@ -205,10 +245,15 @@ function open_supplier_dialog(frm, suggested) {
 					: __("No supplier matched this letter, pick one."),
 			},
 			{
+				fieldname: "booking",
+				fieldtype: "HTML",
+				options: booking_lines_html(frm),
+			},
+			{
 				fieldname: "note",
 				fieldtype: "HTML",
 				options: `<p class="text-muted small">${__(
-					"The invoice is created as a draft and is never submitted. Amounts and accounts are yours to complete."
+					"The invoice is created as a draft and is never submitted. Check every suggested account and VAT template before submitting."
 				)}</p>`,
 			},
 		],

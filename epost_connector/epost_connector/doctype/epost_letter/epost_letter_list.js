@@ -48,6 +48,7 @@ frappe.listview_settings["ePost Letter"] = {
 		// shown a button that can only answer with a permission error.
 		if (can_sync()) {
 			listview.page.add_inner_button(__("Sync Now"), () => sync_now(listview));
+			listview.page.add_inner_button(__("Analyze All"), () => analyze_all(listview));
 		}
 		listview.page.add_inner_button(__("Sync Log"), () =>
 			frappe.set_route("List", "ePost Sync Log")
@@ -99,6 +100,25 @@ function bulk_ignore(listview) {
 				})
 				.then(() => listview.refresh());
 		}
+	);
+}
+
+function analyze_all(listview) {
+	frappe.confirm(
+		__("Send every downloaded, unanalysed letter to the configured extractor? With a hosted model this costs one model call per letter."),
+		() =>
+			frappe.call({
+				method: "epost_connector.extraction.pipeline.analyze_all",
+				callback: ({ message }) => {
+					frappe.show_alert({
+						message: message && message.already_running
+							? __("An analysis run is already queued.")
+							: __("Analysis queued. Letters move to Analyzed as they are read."),
+						indicator: "blue",
+					});
+					listview.refresh();
+				},
+			})
 	);
 }
 

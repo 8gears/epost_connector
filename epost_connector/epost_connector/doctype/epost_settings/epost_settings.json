@@ -23,12 +23,17 @@
   "last_sync_status",
   "extraction_section",
   "extractor",
+  "flow_model",
   "accounting_section",
   "company",
   "default_item_code",
   "accounting_column",
   "default_expense_account",
-  "default_cost_center"
+  "default_cost_center",
+  "booking_section",
+  "booking_use_llm",
+  "booking_column",
+  "mixed_taxes_template"
  ],
  "fields": [
   {
@@ -122,11 +127,19 @@
   },
   {
    "default": "None",
-   "description": "Which extractor reads downloaded PDFs. \"None\" leaves letters at Downloaded for a human to complete.",
+   "description": "Which extractor reads downloaded PDFs. \"None\" leaves letters at Downloaded for a human to complete. \"Flow\" asks the Frappe Flow model named below.",
    "fieldname": "extractor",
    "fieldtype": "Select",
    "label": "Extractor",
-   "options": "\nNone"
+   "options": "\nNone\nFlow"
+  },
+  {
+   "depends_on": "eval:doc.extractor=='Flow'",
+   "description": "Name of an enabled Flow Model. Needs the Frappe Flow app. Letter text leaves the site for the model's provider.",
+   "fieldname": "flow_model",
+   "fieldtype": "Data",
+   "label": "Flow Model",
+   "mandatory_depends_on": "eval:doc.extractor=='Flow'"
   },
   {
    "fieldname": "accounting_section",
@@ -161,12 +174,36 @@
    "fieldtype": "Link",
    "label": "Default Cost Center",
    "options": "Cost Center"
+  },
+  {
+   "fieldname": "booking_section",
+   "fieldtype": "Section Break",
+   "label": "Booking Suggestion",
+   "description": "How a draft invoice's accounts and VAT templates are suggested: ePost Booking Rules, then the supplier's own past invoices, then optionally the Flow model."
+  },
+  {
+   "default": "0",
+   "description": "Ask the Flow model about lines that rules and history leave without an account. It may only choose accounts and templates already used on submitted Purchase Invoices.",
+   "fieldname": "booking_use_llm",
+   "fieldtype": "Check",
+   "label": "Use Flow Model for Unknown Suppliers"
+  },
+  {
+   "fieldname": "booking_column",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "Used when a draft's lines carry different VAT templates.",
+   "fieldname": "mixed_taxes_template",
+   "fieldtype": "Link",
+   "label": "Mixed Purchase Taxes Template",
+   "options": "Purchase Taxes and Charges Template"
   }
  ],
  "index_web_pages_for_search": 0,
  "issingle": 1,
  "links": [],
- "modified": "2026-09-01 14:30:00.000000",
+ "modified": "2026-09-29 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "ePost Connector",
  "name": "ePost Settings",

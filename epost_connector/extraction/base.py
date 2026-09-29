@@ -30,6 +30,28 @@ class ExtractionResult:
 	summary: str | None = None
 	confidence: float = 0.0
 	raw: dict[str, Any] = field(default_factory=dict)
+	#: One of `DOCUMENT_KINDS`, or None when the extractor does not classify.
+	document_kind: str | None = None
+	vendor_tax_id: str | None = None
+	#: An ERPNext Country name, e.g. "Switzerland".
+	vendor_country: str | None = None
+	#: One entry per VAT rate the invoice shows: {"rate": 8.1, "net": 100.0, "vat": 8.1}.
+	vat_breakdown: list[dict[str, float]] = field(default_factory=list)
+	#: {"description": str, "net": float, "vat_rate": float | None}, as printed.
+	line_items: list[dict[str, Any]] = field(default_factory=list)
+
+
+#: Options of `ePost Letter.document_kind`.
+DOCUMENT_KINDS = (
+	"Invoice",
+	"Credit Note",
+	"Reminder",
+	"Receipt",
+	"Contract",
+	"Tax Assessment",
+	"Correspondence",
+	"Other",
+)
 
 
 class LetterExtractor(ABC):

@@ -17,6 +17,7 @@
   "letter_type",
   "epost_status",
   "document_types",
+  "document_kind",
   "document_section",
   "file",
   "thumbnail",
@@ -26,15 +27,26 @@
   "pdf_preview",
   "extraction_section",
   "vendor_name",
+  "vendor_tax_id",
+  "vendor_country",
   "invoice_number",
   "invoice_date",
   "due_date",
+  "iban",
+  "qr_reference",
   "extraction_column",
   "currency",
+  "net_amount",
   "amount",
   "vat_amount",
   "extraction_confidence",
   "extraction_raw",
+  "booking_section",
+  "booking_source",
+  "booking_column",
+  "booking_confidence",
+  "booking_suggestion_section",
+  "booking_suggestion",
   "accounting_section",
   "supplier",
   "accounting_column",
@@ -120,6 +132,15 @@
    "read_only": 1
   },
   {
+   "description": "What the extractor classified the letter as.",
+   "fieldname": "document_kind",
+   "fieldtype": "Select",
+   "in_standard_filter": 1,
+   "label": "Document Kind",
+   "options": "\nInvoice\nCredit Note\nReminder\nReceipt\nContract\nTax Assessment\nCorrespondence\nOther",
+   "read_only": 1
+  },
+  {
    "fieldname": "document_section",
    "fieldtype": "Section Break",
    "label": "Document"
@@ -159,7 +180,7 @@
   },
   {
    "collapsible": 1,
-   "depends_on": "eval:doc.vendor_name || doc.invoice_number || doc.invoice_date || doc.due_date || doc.currency || doc.amount || doc.vat_amount",
+   "depends_on": "eval:doc.vendor_name || doc.invoice_number || doc.invoice_date || doc.due_date || doc.currency || doc.amount || doc.vat_amount || doc.net_amount || doc.vendor_tax_id",
    "description": "Filled by the configured extractor. Hidden until one has read something off the letter.",
    "fieldname": "extraction_section",
    "fieldtype": "Section Break",
@@ -169,6 +190,19 @@
    "fieldname": "vendor_name",
    "fieldtype": "Data",
    "label": "Vendor Name",
+   "read_only": 1
+  },
+  {
+   "fieldname": "vendor_tax_id",
+   "fieldtype": "Data",
+   "label": "Vendor Tax ID",
+   "read_only": 1
+  },
+  {
+   "fieldname": "vendor_country",
+   "fieldtype": "Link",
+   "label": "Vendor Country",
+   "options": "Country",
    "read_only": 1
   },
   {
@@ -190,6 +224,18 @@
    "read_only": 1
   },
   {
+   "fieldname": "iban",
+   "fieldtype": "Data",
+   "label": "IBAN",
+   "read_only": 1
+  },
+  {
+   "fieldname": "qr_reference",
+   "fieldtype": "Data",
+   "label": "QR Reference",
+   "read_only": 1
+  },
+  {
    "fieldname": "extraction_column",
    "fieldtype": "Column Break"
   },
@@ -201,11 +247,19 @@
    "read_only": 1
   },
   {
+   "fieldname": "net_amount",
+   "fieldtype": "Currency",
+   "label": "Net Amount",
+   "options": "currency",
+   "read_only": 1
+  },
+  {
    "fieldname": "amount",
    "fieldtype": "Currency",
    "label": "Amount",
    "options": "currency",
-   "read_only": 1
+   "read_only": 1,
+   "in_list_view": 1
   },
   {
    "fieldname": "vat_amount",
@@ -215,7 +269,7 @@
    "read_only": 1
   },
   {
-   "description": "The extractor's own 0-1 estimate. Not interpreted by this app.",
+   "description": "The extractor's estimate, lowered for every consistency check the result fails (see Extraction Raw). Gates nothing.",
    "fieldname": "extraction_confidence",
    "fieldtype": "Float",
    "label": "Extraction Confidence",
@@ -226,6 +280,47 @@
    "fieldname": "extraction_raw",
    "fieldtype": "Code",
    "label": "Extraction Raw",
+   "options": "JSON",
+   "read_only": 1
+  },
+  {
+   "collapsible": 1,
+   "depends_on": "eval:doc.booking_suggestion",
+   "fieldname": "booking_section",
+   "fieldtype": "Section Break",
+   "label": "Booking Suggestion",
+   "description": "What Create Purchase Invoice will put on the draft. Every line names its source."
+  },
+  {
+   "fieldname": "booking_source",
+   "fieldtype": "Select",
+   "in_standard_filter": 1,
+   "label": "Booking Source",
+   "options": "\nRule\nHistory\nLLM\nDefault\nNone",
+   "read_only": 1,
+   "description": "The weakest source across the lines."
+  },
+  {
+   "fieldname": "booking_column",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "booking_confidence",
+   "fieldtype": "Float",
+   "label": "Booking Confidence",
+   "precision": "2",
+   "read_only": 1
+  },
+  {
+   "fieldname": "booking_suggestion_section",
+   "fieldtype": "Section Break",
+   "collapsible": 1,
+   "depends_on": "eval:doc.booking_suggestion"
+  },
+  {
+   "fieldname": "booking_suggestion",
+   "fieldtype": "Code",
+   "label": "Booking Suggestion",
    "options": "JSON",
    "read_only": 1
   },
@@ -275,7 +370,7 @@
  ],
  "index_web_pages_for_search": 0,
  "links": [],
- "modified": "2026-09-01 15:00:00.000000",
+ "modified": "2026-09-29 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "ePost Connector",
  "name": "ePost Letter",

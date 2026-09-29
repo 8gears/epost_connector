@@ -124,6 +124,7 @@ def _resuggest(letter: Any, supplier: str) -> None:
 		suggest_for_letter(letter)
 	except Exception:
 		letter.booking_suggestion = None
+		letter.flags.booking_failed = True
 		frappe.log_error(
 			"ePost: booking suggestion failed", reference_doctype=DOCTYPE, reference_name=letter.name
 		)
@@ -192,6 +193,11 @@ def _build_invoice(letter: Any, settings: Any, company: str, supplier: str):
 	if letter.document_kind == "Credit Note":
 		invoice.is_return = 1
 
+	if letter.flags.booking_failed:
+		invoice.remarks += "\n" + _(
+			"No booking suggestion: suggesting for this supplier failed, see the Error Log."
+		)
+
 	suggestion = _suggestion(letter)
 	lines = [line for line in suggestion.get("lines") or [] if flt(line.get("net"))]
 	if lines:
@@ -199,11 +205,12 @@ def _build_invoice(letter: Any, settings: Any, company: str, supplier: str):
 			invoice.append("items", _signed(invoice, _suggested_item(letter, settings, company, line)))
 		invoice.remarks += "\n" + _("Booking suggested from: {0}").format(_sources(lines))
 		template = suggestion.get("taxes_and_charges")
-		if all(line.get("item_tax_template") for line in lines):
-			if template:
-				_apply_taxes_template(invoice, template)
-			else:
-				invoice.remarks += "\n" + _missing_taxes_note({line["item_tax_template"] for line in lines})
+		if not all(line.get("item_tax_template") for line in lines):
+			invoice.remarks += "\n" + _("VAT not applied: no VAT template could be suggested for every line.")
+		elif template:
+			_apply_taxes_template(invoice, template)
+		else:
+			invoice.remarks += "\n" + _missing_taxes_note({line["item_tax_template"] for line in lines})
 	else:
 		invoice.append("items", _signed(invoice, _build_item(letter, settings, company)))
 	invoice.set_missing_values()

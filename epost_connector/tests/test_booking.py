@@ -144,18 +144,24 @@ class HistoryTest(BookingTestCase):
 	def test_one_account_and_template_across_cost_centers_is_one_booking(self):
 		from epost_connector.tests.site_base import cost_center
 
+		first = cost_center(self.company)
 		second = _second_cost_center(self.company)
-		book_invoice(self.company, SPLIT, [(self.acct_a, self.templates["input"], 40)])
+		self.assertNotEqual(first, second)
+		book_invoice(
+			self.company, SPLIT, [(self.acct_a, self.templates["input"], 40)], cost_center_name=first
+		)
 		book_invoice(
 			self.company, SPLIT, [(self.acct_a, self.templates["input"], 35)], cost_center_name=second
 		)
-		book_invoice(self.company, SPLIT, [(self.acct_b, self.templates["input"], 25)])
+		book_invoice(
+			self.company, SPLIT, [(self.acct_b, self.templates["input"], 25)], cost_center_name=first
+		)
 
 		(line,) = suggest(self.context(SPLIT)).lines
 
 		self.assertEqual(line.expense_account, self.acct_a)
 		self.assertAlmostEqual(line.confidence, 0.75, places=2)
-		self.assertEqual(line.cost_center, cost_center(self.company))
+		self.assertEqual(line.cost_center, first)
 
 	def test_history_after_the_cut_off_date_is_not_used(self):
 		book_invoice(self.company, KNOWN, [(self.acct_a, self.templates["input"], 100)], "2024-06-01")

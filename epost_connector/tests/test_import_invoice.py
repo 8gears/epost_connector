@@ -247,6 +247,24 @@ class InvoiceLineTest(ImportTestCase):
 		line = frappe.get_doc("Purchase Invoice", result["purchase_invoice"]).items[0]
 		self.assertNotEqual(line.expense_account, stale_account)
 
+	def test_a_line_without_a_vat_template_is_noted_instead_of_dropped_silently(self):
+		self.letter_with(
+			vendor_name=SUPPLIER,
+			amount=100.0,
+			booking_suggestion=frappe.as_json(
+				{
+					"supplier": self.supplier,
+					"lines": [{"net": 100.0, "expense_account": expense_account(self.company)}],
+				}
+			),
+		)
+
+		result = create_purchase_invoice(self.letter_doc("inbox-1").name, supplier=self.supplier)
+
+		self.assertIn(
+			"VAT not applied", frappe.get_doc("Purchase Invoice", result["purchase_invoice"]).remarks
+		)
+
 
 class CurrencyTest(ImportTestCase):
 	def test_the_company_currency_is_taken_as_it_stands(self):

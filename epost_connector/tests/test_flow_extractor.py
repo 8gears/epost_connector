@@ -81,6 +81,7 @@ class FlowExtractorTest(ePostSiteTestCase):
 		)
 
 		self.assertFalse(result.raw["checks"]["amounts_only_on_financial_documents"])
+		self.assertAlmostEqual(result.confidence, 0.9 - flow.PENALTIES["amounts_only_on_financial_documents"])
 
 	def test_an_unknown_country_is_dropped(self):
 		result, _ = self.extract({**ANSWER, "vendor_country": "Atlantis"})

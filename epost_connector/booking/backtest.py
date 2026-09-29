@@ -96,7 +96,7 @@ def run(
 			tokens["prompt_tokens"] += usage.get("prompt_tokens") or 0
 			tokens["completion_tokens"] += usage.get("completion_tokens") or 0
 		by_rate = {_rate_key(line.rate): line for line in suggestion.lines}
-		ambiguous = _split_rates(lines)
+		ambiguous = _split_rates(scored)
 
 		invoices_scored += 1
 		exact = True

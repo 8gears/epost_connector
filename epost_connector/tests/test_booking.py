@@ -141,6 +141,22 @@ class HistoryTest(BookingTestCase):
 
 		self.assertEqual(line.expense_account, self.acct_b)
 
+	def test_one_account_and_template_across_cost_centers_is_one_booking(self):
+		from epost_connector.tests.site_base import cost_center
+
+		second = _second_cost_center(self.company)
+		book_invoice(self.company, SPLIT, [(self.acct_a, self.templates["input"], 40)])
+		book_invoice(
+			self.company, SPLIT, [(self.acct_a, self.templates["input"], 35)], cost_center_name=second
+		)
+		book_invoice(self.company, SPLIT, [(self.acct_b, self.templates["input"], 25)])
+
+		(line,) = suggest(self.context(SPLIT)).lines
+
+		self.assertEqual(line.expense_account, self.acct_a)
+		self.assertAlmostEqual(line.confidence, 0.75, places=2)
+		self.assertEqual(line.cost_center, cost_center(self.company))
+
 	def test_history_after_the_cut_off_date_is_not_used(self):
 		book_invoice(self.company, KNOWN, [(self.acct_a, self.templates["input"], 100)], "2024-06-01")
 
@@ -271,7 +287,7 @@ class LlmFallbackTest(BookingTestCase):
 			(line,) = suggest(self.context(NEW, groups=[VatGroup(net=10, rate=0.0)]), llm_model="any").lines
 
 		self.assertEqual(line.item_tax_template, self.templates["reverse"])
-		self.assertEqual(line.template_source, "Rule")
+		self.assertEqual(line.template_source, "Default")
 
 	def test_a_malformed_answer_leaves_the_line_open_instead_of_failing(self):
 		book_invoice(self.company, KNOWN, [(self.acct_b, self.templates["input"], 100)])
@@ -279,13 +295,48 @@ class LlmFallbackTest(BookingTestCase):
 			{"lines": {}},
 			{"lines": ["x", 3]},
 			{"lines": [{"index": 0, "expense_account": [1], "item_tax_template": None}]},
+			{"lines": [{"index": True, "expense_account": self.acct_b, "item_tax_template": None}]},
 		):
 			with (
 				self.subTest(answer=answer),
-				patch("epost_connector.booking.llm.ask_json", return_value=(answer, None)),
+				patch("epost_connector.booking.llm.ask_json", return_value=(answer, None)) as ask,
 			):
 				(line,) = suggest(self.context(NEW), llm_model="any").lines
+				ask.assert_called_once()
 				self.assertIsNone(line.expense_account)
+
+	def test_an_integral_float_index_is_accepted(self):
+		book_invoice(self.company, KNOWN, [(self.acct_b, self.templates["input"], 100)])
+		answer = {
+			"lines": [
+				{"index": 0.0, "expense_account": self.acct_b, "item_tax_template": None, "confidence": 0.5}
+			]
+		}
+
+		with patch("epost_connector.booking.llm.ask_json", return_value=(answer, None)):
+			(line,) = suggest(self.context(NEW), llm_model="any").lines
+
+		self.assertEqual(line.expense_account, self.acct_b)
+
+	def test_a_model_template_for_another_vat_rate_is_dropped_but_the_account_kept(self):
+		book_invoice(self.company, KNOWN, [(self.acct_b, self.templates["input"], 100)])
+		answer = {
+			"lines": [
+				{
+					"index": 0,
+					"expense_account": self.acct_b,
+					"item_tax_template": self.templates["input"],
+					"confidence": 0.5,
+					"reason": "x",
+				}
+			]
+		}
+
+		with patch("epost_connector.booking.llm.ask_json", return_value=(answer, None)):
+			(line,) = suggest(self.context(NEW, groups=[VatGroup(net=10, rate=0.0)]), llm_model="any").lines
+
+		self.assertEqual(line.expense_account, self.acct_b)
+		self.assertIsNone(line.item_tax_template)
 
 	def test_without_a_model_nothing_is_asked(self):
 		with patch("epost_connector.booking.llm.ask_json") as ask:
@@ -304,3 +355,52 @@ class BacktestTest(BookingTestCase):
 		self.assertEqual(history_tally["lines"], 1)
 		self.assertEqual(history_tally["account_accuracy"], 1.0)
 		self.assertEqual(result["by_source"]["None"]["lines"], 1, "the first invoice had no history")
+
+
+class LetterSuggestionTest(BookingTestCase):
+	def test_a_letter_that_stops_being_bookable_loses_its_old_suggestion(self):
+		from epost_connector.booking.letter import suggest_for_letter
+		from epost_connector.epost.sync import sync_letters
+
+		self.state.content_override.clear()
+		sync_letters()
+		letter = self.letter_doc("inbox-1")
+		letter.update(
+			{
+				"amount": 10,
+				"document_kind": "Contract",
+				"booking_suggestion": '{"lines": [{"net": 10}]}',
+				"booking_source": "History",
+			}
+		)
+
+		self.assertIsNone(suggest_for_letter(letter))
+		self.assertIsNone(letter.booking_suggestion)
+		self.assertIsNone(letter.booking_source)
+
+
+class AnalyzeAllTest(ePostSiteTestCase):
+	def test_it_refuses_to_queue_work_the_no_op_extractor_cannot_do(self):
+		from epost_connector.extraction.pipeline import analyze_all
+
+		with self.assertRaises(frappe.ValidationError):
+			analyze_all()
+
+
+def _second_cost_center(company: str) -> str:
+	from epost_connector.tests.site_base import TEST_COMPANY_ABBR
+
+	name = f"Booking Test Center - {TEST_COMPANY_ABBR}"
+	if not frappe.db.exists("Cost Center", name):
+		parent = frappe.db.get_value("Cost Center", {"company": company, "is_group": 1}, "name")
+		frappe.get_doc(
+			{
+				"doctype": "Cost Center",
+				"cost_center_name": "Booking Test Center",
+				"parent_cost_center": parent,
+				"company": company,
+				"is_group": 0,
+			}
+		).insert(ignore_permissions=True)
+		frappe.db.commit()
+	return name

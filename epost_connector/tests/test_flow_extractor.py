@@ -73,6 +73,14 @@ class FlowExtractorTest(ePostSiteTestCase):
 		result, _ = self.extract({**ANSWER, "due_date": "2024-04-01"})
 
 		self.assertFalse(result.raw["checks"]["dates_valid"])
+		self.assertAlmostEqual(result.confidence, 0.9 - flow.PENALTIES["dates_valid"])
+
+	def test_amounts_on_a_non_financial_document_lower_the_confidence(self):
+		result, _ = self.extract(
+			{"document_kind": "Contract", "net_amount": 100.0, "gross_amount": None, "confidence": 0.9}
+		)
+
+		self.assertFalse(result.raw["checks"]["amounts_only_on_financial_documents"])
 
 	def test_an_unknown_country_is_dropped(self):
 		result, _ = self.extract({**ANSWER, "vendor_country": "Atlantis"})

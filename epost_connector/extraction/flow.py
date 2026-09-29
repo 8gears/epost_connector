@@ -141,9 +141,9 @@ def _messages(letter_doc: Any, text: str, pdf_bytes: bytes) -> list[dict]:
 
 
 def _pdf_text(pdf_bytes: bytes) -> str:
-	import pdfplumber
-
 	try:
+		import pdfplumber
+
 		with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
 			return "\n\n".join((page.extract_text() or "") for page in pdf.pages).strip()
 	except Exception:
@@ -211,8 +211,8 @@ def _checks(result: ExtractionResult) -> dict[str, bool | None]:
 	if result.document_kind == "Invoice":
 		checks["gross_present_on_invoice"] = gross is not None
 	elif result.document_kind:
-		checks["amounts_only_on_financial_documents"] = (
-			result.document_kind in FINANCIAL_KINDS or gross is None
+		checks["amounts_only_on_financial_documents"] = result.document_kind in FINANCIAL_KINDS or (
+			gross is None and net is None and vat is None and not result.vat_breakdown
 		)
 	return checks
 

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import frappe
 
-from epost_connector.tests.site_base import TEST_COMPANY_ABBR, cost_center, ensure_supplier
+from epost_connector.tests.site_base import TEST_COMPANY, TEST_COMPANY_ABBR, cost_center, ensure_supplier
 
 INPUT_TAX = "Test Input Tax"
 REVERSE_CHARGE = "Test Reverse Charge"
@@ -52,6 +52,7 @@ def book_invoice(
 	supplier_name: str,
 	lines: list[tuple[str, str | None, float]],
 	posting_date: str = "2024-06-01",
+	cost_center_name: str | None = None,
 ) -> str:
 	"""A submitted Purchase Invoice with one line per (account, item tax template, net)."""
 	supplier = ensure_supplier(supplier_name)
@@ -81,7 +82,7 @@ def book_invoice(
 				"conversion_factor": 1,
 				"expense_account": account,
 				"item_tax_template": template,
-				"cost_center": cost_center(company),
+				"cost_center": cost_center_name or cost_center(company),
 			},
 		)
 	invoice.set_missing_values()
@@ -106,7 +107,7 @@ def purge_booked(suppliers: list[str]) -> None:
 		# under that name would then appear to have posted.
 		for doctype in ("GL Entry", "Payment Ledger Entry"):
 			frappe.db.delete(doctype, {"voucher_type": "Purchase Invoice", "voucher_no": name})
-	frappe.db.delete("ePost Booking Rule")
+	frappe.db.delete("ePost Booking Rule", {"company": TEST_COMPANY})
 	frappe.db.commit()
 
 

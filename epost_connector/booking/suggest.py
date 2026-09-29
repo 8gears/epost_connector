@@ -31,9 +31,6 @@ AFTER_HISTORY = "After history"
 VAT_CHARGED = "Charged"
 VAT_NOT_CHARGED = "Not charged"
 
-#: How far a rate read off a letter may be from a template's rate and still match.
-RATE_TOLERANCE = 0.05
-
 #: Confidence per source. History carries its own share instead.
 RULE_CONFIDENCE = 1.0
 DEFAULT_CONFIDENCE = 0.3
@@ -158,14 +155,16 @@ def _apply_rules(
 			return
 		if not _rule_matches(rule, context, line):
 			continue
+		# A rule after history is a default, not a decision about this supplier.
+		source = SOURCE_RULE if rule.apply_when == BEFORE_HISTORY else SOURCE_DEFAULT
 		filled = False
 		if not line.expense_account and rule.expense_account:
 			line.expense_account = rule.expense_account
-			line.account_source = SOURCE_RULE
+			line.account_source = source
 			filled = True
-		if template_open and rule.item_tax_template and _rate_fits(rule.item_tax_template, line.rate):
+		if template_open and rule.item_tax_template and history.rate_fits(rule.item_tax_template, line.rate):
 			line.item_tax_template = rule.item_tax_template
-			line.template_source = SOURCE_RULE
+			line.template_source = source
 			filled = True
 		if not line.cost_center and rule.cost_center:
 			line.cost_center = rule.cost_center
@@ -180,7 +179,7 @@ def _apply_history(line: SuggestedLine, ranked: list[history.Combination], confi
 	fitting = [
 		c
 		for c in ranked
-		if _rate_fits(c.item_tax_template, line.rate)
+		if history.rate_fits(c.item_tax_template, line.rate)
 		and (not line.item_tax_template or c.item_tax_template == line.item_tax_template)
 	]
 	if line.expense_account:
@@ -260,13 +259,6 @@ def _rule_matches(rule, context: BookingContext, line: SuggestedLine) -> bool:
 		except re.error:
 			return False
 	return True
-
-
-def _rate_fits(item_tax_template: str | None, rate: float | None) -> bool:
-	if rate is None or not item_tax_template:
-		return True
-	template_rate = history.charged_rate(item_tax_template)
-	return template_rate is not None and abs(template_rate - flt(rate)) <= RATE_TOLERANCE
 
 
 def _taxes_template(lines: list[SuggestedLine], mixed_template: str | None) -> str | None:

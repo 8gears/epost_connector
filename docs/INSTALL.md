@@ -57,9 +57,11 @@ linked Purchase Invoice, the attached PDF — is left alone.
 
 `Create Purchase Invoice` always produces a **draft**. Nothing is submitted or booked automatically.
 
-## Document extraction is an interface, not an implementation
+## Document extraction
 
-The app ships a no-op extractor. `epost_connector/extraction/` defines the contract:
+The app ships a no-op extractor (the default) and `FlowExtractor`, which needs the optional Frappe Flow
+app and an enabled Flow Model named in `ePost Settings.flow_model`. With `Flow`, letter content is sent
+to the model's provider; see the README, *Extraction* and *Booking suggestion*. `epost_connector/extraction/` defines the contract:
 
 ```python
 class LetterExtractor(ABC):
@@ -72,8 +74,8 @@ legitimate. Register an implementation in `extraction/registry.py`, add it to th
 on `ePost Settings`, and the sync pipeline calls it between download and import. Implementations must
 be side-effect free and must return `None` rather than raise when they find nothing usable.
 
-Until an extractor is registered, the Extraction section stays hidden and the amount fields are not
-shown — deliberately, so the UI never displays a figure nobody read off the document.
+The Extraction section stays hidden on a letter until an extractor has read something off it, so the
+form never displays a figure nobody read off the document.
 
 ## Verifying a deployment
 

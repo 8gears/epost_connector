@@ -44,7 +44,10 @@ epost/sync.py ........... upsert ePost Letter, download PDF -> private File,
 	│                     write one ePost Sync Log per run.  Hourly, and on demand.
 	▼
 extraction/ ............. LetterExtractor interface + registry.
-	│                     Ships NoopExtractor only; no LLM implementation.
+	│                     NoopExtractor (default) or FlowExtractor.
+	▼
+booking/ ................ suggest account, VAT template, cost center:
+	│                     rules, then supplier history, then a Flow model.
 	▼
 epost/import_invoice.py . draft Purchase Invoice, never submitted.
 ```
@@ -190,12 +193,9 @@ carries the categories ePost put on the letter, lower-cased so that `Invoice`,
 so "show me the invoices" is one click. Every row with a PDF gets a **PDF**
 button that opens the scan without leaving the list.
 
-There is deliberately **no `Amount` column**. The only extractor this app ships
-is the no-op (see *Extraction* below), so in the shipped configuration every
-letter's amount is `0` — and a Currency column cannot be empty, so those zeroes
-render with a currency symbol taken from the site default. That is a
-denomination nobody read off the document, on every row. Add the column under
-**List Settings** once a real extractor is filling the field.
+The **Amount** column shows what the extractor read off the letter. With the
+no-op extractor it stays `0` on every row; remove it under **List Settings** if
+no extractor is configured.
 
 **Quick Filters** holds the views worth having: New Letters, To Import, Sync
 Errors, Imported, Everything. The default view hides `Ignored` letters, and
@@ -244,31 +244,79 @@ against existing Suppliers (exact first, then normalised, ignoring case,
 punctuation and legal-form suffixes). An ambiguous match is treated as no match
 so you are asked rather than handed a guess.
 
-One item line is created, using `Default Item` if set, otherwise a non-stock line
-carrying the letter title. `bill_no`, `bill_date` and `due_date` are filled from
-extraction fields when present, and the letter's PDF is linked to the invoice.
-Amounts are `0` until an extractor fills them in.
+When the letter carries a booking suggestion (see *Booking suggestion* below),
+the draft gets one line per suggested VAT group, each with its expense account,
+item tax template and cost center, plus the matching Purchase Taxes and Charges
+Template. Otherwise one item line is created, using `Default Item` if set,
+otherwise a non-stock line carrying the letter title. `bill_no`, `bill_date` and
+`due_date` are filled from extraction fields when present, and the letter's PDF
+is linked to the invoice.
 
-A foreign currency is *not* applied to the draft, because a conversion rate is a
-decision only a human can make; the detected currency is noted in `remarks`
-instead.
+The letter's currency is used, with ERPNext's buying exchange rate, when ERPNext
+accepts that currency for the supplier: the supplier already has ledger entries,
+its payable account is in that currency, or multi-currency invoices are allowed.
+Otherwise the draft stays in the company currency and the detected currency is
+noted in `remarks`.
 
 ## Extraction
 
-`extraction/` defines the interface and ships **no working extractor**. The
-default `NoopExtractor` returns `None`, so extraction fields stay empty and
-letters stop at `Downloaded`.
+`extraction/` defines the interface and ships two extractors. The default
+`NoopExtractor` returns `None`, so extraction fields stay empty and letters stop
+at `Downloaded`.
 
-To add one, for example an LLM-backed extractor:
+`FlowExtractor` (`extractor = Flow`) needs the optional
+[Frappe Flow](https://github.com/frappe/flow_client) app and an enabled Flow
+Model, named in `ePost Settings.flow_model`. It sends the PDF's text layer to the
+model, or the PDF itself when there is no usable text, and reads back vendor,
+tax id, country, IBAN, QR reference, invoice number, dates, currency, net / VAT /
+gross, a per-rate VAT breakdown and a document kind. **Letter content leaves the
+site for the model's provider.** The stored confidence is the model's estimate
+minus a penalty per failed consistency check (totals, VAT breakdown, dates,
+currency); each check is kept in `Extraction Raw`.
 
-1. Subclass `LetterExtractor` in `extraction/anthropic.py`, set `name`, implement
+The hourly sync extracts letters as it downloads them. Letters synced before an
+extractor was configured are extracted once with **Analyze All** on the list,
+or `bench --site <site> execute epost_connector.extraction.pipeline.analyze_downloaded`.
+
+To add another extractor:
+
+1. Subclass `LetterExtractor`, set `name`, implement
    `extract(self, letter_doc, pdf_bytes) -> ExtractionResult | None`.
 2. Register it in `extraction/registry.py::EXTRACTORS` under a key, and add the
    same key to the `extractor` Select options on `ePost Settings`.
 
-Nothing in the sync engine or the invoice importer changes. Results land in
-read-only fields on the letter, so a wrong answer is visible and correctable by a
-human before anything is booked.
+Results land in read-only fields on the letter, so a wrong answer is visible and
+correctable by a human before anything is booked.
+
+## Booking suggestion
+
+After extraction, `booking/` suggests how each VAT group of the letter is
+booked, and stores the suggestion on the letter (**Booking Suggestion**). Three
+sources are asked in a fixed order, each filling only what is still open:
+
+1. **ePost Booking Rule** rows with *Apply = Before history*: explicit decisions,
+   matched on supplier, vendor tax id, keyword, vendor country.
+2. **History**: the supplier's own submitted Purchase Invoices, grouped by
+   account and item tax template and weighted by amount, halved per year of
+   age. The leading combination is used when it holds at least half the weight,
+   and its share is the confidence.
+3. **ePost Booking Rule** rows with *Apply = After history*: defaults such as
+   "VAT not charged, foreign vendor, account starting with 4 → reverse-charge
+   template". These may also replace a template the model chose.
+
+With **Use Flow Model for Unknown Suppliers** on, lines still without an account
+go to the Flow model in one call per letter. It is shown the accounts and item
+tax templates the company has booked supplier invoices to, and one example per
+known supplier, and may answer only from those lists. Its confidence is capped
+below history's.
+
+A template's VAT rate is read from the Purchase Taxes and Charges Template of the
+same name, with `Deduct` rows subtracted, so a reverse-charge template counts as
+the 0 % the supplier charged. Name both templates alike.
+
+`booking.backtest.run(company, ...)` replays the suggestion over invoices that
+were already booked by hand, each using only earlier invoices, and reports the
+accuracy per source.
 
 ## Parallel operation
 

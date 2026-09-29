@@ -101,6 +101,11 @@ def purge_booked(suppliers: list[str]) -> None:
 		if invoice.docstatus == 1:
 			invoice.cancel()
 		frappe.delete_doc("Purchase Invoice", name, force=True, ignore_permissions=True)
+		# Cancelling leaves the ledger rows behind, and deleting the last invoice
+		# of a naming series hands its name to the next one. A draft created later
+		# under that name would then appear to have posted.
+		for doctype in ("GL Entry", "Payment Ledger Entry"):
+			frappe.db.delete(doctype, {"voucher_type": "Purchase Invoice", "voucher_no": name})
 	frappe.db.delete("ePost Booking Rule")
 	frappe.db.commit()
 

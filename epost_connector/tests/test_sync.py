@@ -25,7 +25,6 @@ from epost_connector.epost.sync import (
 	reconcile,
 	sync_letters,
 )
-from epost_connector.extraction import registry
 from epost_connector.tests import mock_epost
 from epost_connector.tests.mock_epost import (
 	BAD_THUMBNAIL_LETTER,
@@ -104,40 +103,21 @@ class SyncCoverageTest(ePostSiteTestCase):
 		self.assertEqual(self.letter_doc("s-participant").sender_name, "participant-1")
 		self.assertEqual(self.letter_doc("s-user").sender_name, "user-1")
 
-	def test_the_list_view_shows_only_columns_that_hold_a_real_value(self):
+	def test_the_list_view_columns(self):
 		"""List columns come only from `in_list_view`; there is no client API.
 
-		`amount` is deliberately not among them, and this is the guard on putting
-		it back. See `test_the_amount_column_would_be_fabricated_today` for why.
+		`amount` became a column once the app shipped a working extractor. Until
+		then it was kept out, because an unextracted letter holds 0 and a list
+		read for bookkeeping would state an amount nobody read off the letter.
+		That is still true on a site that runs the no-op extractor, which is why
+		the README tells such a site to remove the column.
 		"""
 		meta = frappe.get_meta("ePost Letter")
 		listed = [f.fieldname for f in meta.fields if f.in_list_view]
 
-		self.assertEqual(listed, ["title", "sender_name", "received_at", "status", "document_types"])
-
-	def test_the_amount_column_would_be_fabricated_today(self):
-		"""Why `amount` is not a list column, and the condition for adding it.
-
-		A Currency column is `NOT NULL DEFAULT 0`, so an unextracted letter holds
-		0 rather than nothing, and a Currency field with no `currency` beside it
-		formats using the *site* default. Shown in a list that is read for
-		bookkeeping, a letter nobody has opened therefore states an amount and a
-		denomination that were never read off it.
-
-		The app ships only the no-op extractor, so that is every row, always.
-		Register a real extractor and this test starts failing — that is the
-		signal to make `amount` a column.
-		"""
-		self.assertEqual(frappe.db.get_single_value("ePost Settings", "extractor"), "None")
-		self.assertEqual(set(registry.EXTRACTORS), {"", "None"})
-
-		self.state.content_override.clear()
-		sync_letters()
-
-		amounts = frappe.get_all("ePost Letter", pluck="amount")
-		self.assertTrue(amounts)
-		self.assertEqual(set(amounts), {0}, "an extractor now fills amount; reconsider the column")
-		self.assertEqual(set(frappe.get_all("ePost Letter", pluck="currency")), {None})
+		self.assertEqual(
+			listed, ["title", "sender_name", "received_at", "status", "document_types", "amount"]
+		)
 
 	def test_a_currency_field_cannot_represent_an_amount_nobody_read(self):
 		"""The reason the fix is to hide the field rather than to blank it.

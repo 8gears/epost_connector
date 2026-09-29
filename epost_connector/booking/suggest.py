@@ -176,24 +176,26 @@ def _apply_rules(
 def _apply_history(line: SuggestedLine, ranked: list[history.Combination], confidences: list) -> None:
 	if line.expense_account and line.item_tax_template:
 		return
-	consistent = [
+	fitting = [
 		c
 		for c in ranked
-		if (not line.expense_account or c.expense_account == line.expense_account)
+		if _rate_fits(c.item_tax_template, line.rate)
 		and (not line.item_tax_template or c.item_tax_template == line.item_tax_template)
-		and _rate_fits(c.item_tax_template, line.rate)
 	]
-	total = sum(c.weight for c in consistent)
+	if line.expense_account:
+		_apply_history_template(line, fitting, confidences)
+		return
+
+	total = sum(c.weight for c in fitting)
 	if not total:
 		return
-	top = consistent[0]
+	top = fitting[0]
 	share = top.weight / total
 	if share < history.MIN_SHARE:
 		return
 
-	if not line.expense_account:
-		line.expense_account = top.expense_account
-		line.account_source = SOURCE_HISTORY
+	line.expense_account = top.expense_account
+	line.account_source = SOURCE_HISTORY
 	if not line.item_tax_template and top.item_tax_template:
 		line.item_tax_template = top.item_tax_template
 		line.template_source = SOURCE_HISTORY
@@ -201,6 +203,30 @@ def _apply_history(line: SuggestedLine, ranked: list[history.Combination], confi
 		line.cost_center = top.cost_center
 	line.evidence.extend(top.invoices[:5])
 	confidences.append(share)
+
+
+def _apply_history_template(
+	line: SuggestedLine, fitting: list[history.Combination], confidences: list
+) -> None:
+	"""A rule chose the account; the supplier's VAT treatment still comes from its history.
+
+	How a supplier is taxed does not depend on which account an invoice is booked
+	to, so the lines on that account are preferred and all lines are the fallback.
+	"""
+	pool = [c for c in fitting if c.expense_account == line.expense_account] or fitting
+	weights: dict[str, float] = {}
+	for combo in pool:
+		if combo.item_tax_template:
+			weights[combo.item_tax_template] = weights.get(combo.item_tax_template, 0.0) + combo.weight
+	total = sum(weights.values())
+	if not total:
+		return
+	template, weight = max(weights.items(), key=lambda item: item[1])
+	if weight / total < history.MIN_SHARE:
+		return
+	line.item_tax_template = template
+	line.template_source = SOURCE_HISTORY
+	confidences.append(weight / total)
 
 
 def _rule_matches(rule, context: BookingContext, line: SuggestedLine) -> bool:

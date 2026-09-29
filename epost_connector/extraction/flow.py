@@ -170,10 +170,9 @@ def _to_result(answer: dict) -> ExtractionResult:
 		gross_amount=_number(answer.get("gross_amount")),
 		vat_breakdown=[
 			{"rate": flt(row.get("rate")), "net": flt(row.get("net")), "vat": flt(row.get("vat"))}
-			for row in answer.get("vat_breakdown") or []
-			if isinstance(row, dict)
+			for row in _dicts(answer.get("vat_breakdown"))
 		],
-		line_items=[row for row in (answer.get("line_items") or [])[:20] if isinstance(row, dict)],
+		line_items=_dicts(answer.get("line_items"))[:20],
 		summary=_text(answer.get("summary")),
 	)
 
@@ -216,6 +215,11 @@ def _checks(result: ExtractionResult) -> dict[str, bool | None]:
 			result.document_kind in FINANCIAL_KINDS or gross is None
 		)
 	return checks
+
+
+def _dicts(value: Any) -> list[dict]:
+	"""The dict items of a list, since a prompt-level schema is not enforced."""
+	return [row for row in value if isinstance(row, dict)] if isinstance(value, list) else []
 
 
 def _date(value: str | None):

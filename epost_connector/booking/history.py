@@ -31,6 +31,7 @@ MIN_SHARE = 0.5
 @dataclass(frozen=True)
 class PastLine:
 	invoice: str
+	supplier: str
 	posting_date: date
 	expense_account: str
 	item_tax_template: str | None
@@ -40,54 +41,82 @@ class PastLine:
 
 @dataclass
 class Combination:
-	"""One way the supplier was booked, with the weight of the lines behind it."""
+	"""One way the supplier was booked: an account and a VAT template.
+
+	The cost center is not part of the key. A supplier booked to one account and
+	template across several cost centers is one consistent booking, and splitting
+	it by center would push each part under `MIN_SHARE`. The heaviest center is
+	suggested instead.
+	"""
 
 	expense_account: str
 	item_tax_template: str | None
-	cost_center: str | None
+	cost_center: str | None = None
 	weight: float = 0.0
 	share: float = 0.0
 	invoices: list[str] = field(default_factory=list)
 
 
 def past_lines(
-	supplier: str,
+	supplier: str | None,
 	company: str,
 	before: date | str | None = None,
 	exclude_invoices: Iterable[str] = (),
 ) -> list[PastLine]:
-	"""Submitted Purchase Invoice lines of `supplier`, optionally only those before a date."""
-	filters = {"docstatus": 1, "supplier": supplier, "company": company}
-	if before:
-		filters["posting_date"] = ("<", getdate(before))
-	excluded = set(exclude_invoices)
+	"""Submitted Purchase Invoice lines of `supplier` (every supplier when None).
 
-	invoices = frappe.get_all("Purchase Invoice", filters=filters, fields=["name", "posting_date"])
-	dates = {inv.name: inv.posting_date for inv in invoices if inv.name not in excluded}
-	if not dates:
-		return []
-
-	rows = frappe.get_all(
-		"Purchase Invoice Item",
-		filters={"parent": ("in", list(dates)), "parenttype": "Purchase Invoice"},
-		fields=["parent", "expense_account", "item_tax_template", "cost_center", "base_net_amount"],
+	Lines on an account that has since been disabled are left out: ERPNext would
+	refuse that account on the draft the suggestion ends up on.
+	"""
+	invoice = frappe.qb.DocType("Purchase Invoice")
+	item = frappe.qb.DocType("Purchase Invoice Item")
+	account = frappe.qb.DocType("Account")
+	query = (
+		frappe.qb.from_(item)
+		.join(invoice)
+		.on(invoice.name == item.parent)
+		.join(account)
+		.on(account.name == item.expense_account)
+		.select(
+			invoice.name,
+			invoice.supplier,
+			invoice.posting_date,
+			item.expense_account,
+			item.item_tax_template,
+			item.cost_center,
+			item.base_net_amount,
+		)
+		.where(
+			(invoice.docstatus == 1)
+			& (invoice.company == company)
+			& (item.parenttype == "Purchase Invoice")
+			& (account.disabled == 0)
+		)
 	)
+	if supplier:
+		query = query.where(invoice.supplier == supplier)
+	if before:
+		query = query.where(invoice.posting_date < getdate(before))
+	excluded = list(set(exclude_invoices))
+	if excluded:
+		query = query.where(invoice.name.notin(excluded))
+
 	return [
 		PastLine(
-			invoice=row.parent,
-			posting_date=getdate(dates[row.parent]),
+			invoice=row.name,
+			supplier=row.supplier,
+			posting_date=getdate(row.posting_date),
 			expense_account=row.expense_account,
 			item_tax_template=row.item_tax_template or None,
 			cost_center=row.cost_center or None,
 			amount=flt(row.base_net_amount),
 		)
-		for row in rows
-		if row.expense_account
+		for row in query.run(as_dict=True)
 	]
 
 
 def rank(lines: Iterable[PastLine], as_of: date | str | None = None) -> list[Combination]:
-	"""Group past lines by how they were booked, heaviest first.
+	"""Group past lines by account and VAT template, heaviest first.
 
 	A line weighs its absolute amount, halved for every `HALF_LIFE_DAYS` of age.
 	Absolute, because a credit note booked to an account is still evidence that
@@ -95,10 +124,14 @@ def rank(lines: Iterable[PastLine], as_of: date | str | None = None) -> list[Com
 	"""
 	as_of = getdate(as_of) if as_of else None
 	combos: dict[tuple, Combination] = {}
+	centers: dict[tuple, dict[str | None, float]] = {}
 	for line in lines:
-		key = (line.expense_account, line.item_tax_template, line.cost_center)
+		key = (line.expense_account, line.item_tax_template)
 		combo = combos.setdefault(key, Combination(*key))
-		combo.weight += abs(line.amount) * _decay(line.posting_date, as_of)
+		weight = abs(line.amount) * _decay(line.posting_date, as_of)
+		combo.weight += weight
+		by_center = centers.setdefault(key, {})
+		by_center[line.cost_center] = by_center.get(line.cost_center, 0.0) + weight
 		if line.invoice not in combo.invoices:
 			combo.invoices.append(line.invoice)
 
@@ -106,6 +139,8 @@ def rank(lines: Iterable[PastLine], as_of: date | str | None = None) -> list[Com
 	ranked = sorted(combos.values(), key=lambda c: c.weight, reverse=True)
 	for combo in ranked:
 		combo.share = combo.weight / total if total else 0.0
+		weights = centers[(combo.expense_account, combo.item_tax_template)]
+		combo.cost_center = max(weights, key=weights.get)
 	return ranked
 
 
@@ -140,6 +175,18 @@ def charged_rate(item_tax_template: str | None) -> float | None:
 			else None
 		)
 	return cache[item_tax_template]
+
+
+#: How far a rate read off a letter may be from a template's rate and still match.
+RATE_TOLERANCE = 0.05
+
+
+def rate_fits(item_tax_template: str | None, rate: float | None) -> bool:
+	"""Whether `item_tax_template` books a line on which the supplier charged `rate`."""
+	if rate is None or not item_tax_template:
+		return True
+	template_rate = charged_rate(item_tax_template)
+	return template_rate is not None and abs(template_rate - flt(rate)) <= RATE_TOLERANCE
 
 
 def _decay(posted: date, as_of: date | None) -> float:

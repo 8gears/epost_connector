@@ -223,6 +223,30 @@ class InvoiceLineTest(ImportTestCase):
 				frappe.delete_doc("Purchase Invoice", invoice.name, force=True, ignore_permissions=True)
 				self.letter_with(purchase_invoice=None, status="Downloaded")
 
+	def test_a_suggestion_made_for_another_supplier_is_not_applied(self):
+		"""Changing the supplier in the dialog must not carry the old supplier's booking."""
+		stale_account = next(
+			a
+			for a in frappe.get_all(
+				"Account",
+				filters={"company": self.company, "root_type": "Expense", "is_group": 0},
+				pluck="name",
+			)
+			if a != expense_account(self.company)
+		)
+		self.letter_with(
+			vendor_name=SUPPLIER,
+			amount=100.0,
+			booking_suggestion=frappe.as_json(
+				{"supplier": "Someone Else", "lines": [{"net": 100.0, "expense_account": stale_account}]}
+			),
+		)
+
+		result = create_purchase_invoice(self.letter_doc("inbox-1").name, supplier=self.supplier)
+
+		line = frappe.get_doc("Purchase Invoice", result["purchase_invoice"]).items[0]
+		self.assertNotEqual(line.expense_account, stale_account)
+
 
 class CurrencyTest(ImportTestCase):
 	def test_the_company_currency_is_taken_as_it_stands(self):

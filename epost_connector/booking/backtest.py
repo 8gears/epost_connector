@@ -41,6 +41,10 @@ def run(
 	With `llm_model`, lines left open are sent to that Flow Model, one call per
 	invoice, with the invoice remarks as its only text. Real letters carry their
 	whole text, so this understates what the model does on a letter.
+
+	Lines at a rate the invoice booked more than one way cannot all match one
+	suggestion for that rate. They are reported as `split_rate_lines` and left
+	out of the totals.
 	"""
 	excluded = set(exclude_invoices)
 	prefixes = tuple(exclude_account_prefixes)
@@ -57,12 +61,15 @@ def run(
 	misses: list[dict] = []
 	invoices_scored = invoices_exact = 0
 	tokens = {"prompt_tokens": 0, "completion_tokens": 0, "calls": 0}
+	split = _Tally()
 
 	for invoice in invoices:
 		if invoice.name in excluded:
 			continue
 		lines = _booked_lines(invoice.name)
-		scored = [line for line in lines if not (prefixes and line.expense_account.startswith(prefixes))]
+		scored = [
+			line for line in lines if not (prefixes and (line.expense_account or "").startswith(prefixes))
+		]
 		if not scored:
 			continue
 
@@ -75,6 +82,7 @@ def run(
 			groups=_groups(lines),
 		)
 		frappe.local.epost_llm_usage = None
+		frappe.local.epost_llm_calls = 0
 		suggestion = suggest(
 			context,
 			as_of=invoice.posting_date,
@@ -82,12 +90,13 @@ def run(
 			mixed_template=mixed_template,
 			llm_model=llm_model,
 		)
+		tokens["calls"] += getattr(frappe.local, "epost_llm_calls", 0) or 0
 		usage = getattr(frappe.local, "epost_llm_usage", None)
 		if usage:
-			tokens["calls"] += 1
 			tokens["prompt_tokens"] += usage.get("prompt_tokens") or 0
 			tokens["completion_tokens"] += usage.get("completion_tokens") or 0
 		by_rate = {_rate_key(line.rate): line for line in suggestion.lines}
+		ambiguous = _split_rates(lines)
 
 		invoices_scored += 1
 		exact = True
@@ -98,6 +107,13 @@ def run(
 			source = predicted.account_source if predicted else "None"
 			weight = abs(flt(line.base_net_amount))
 
+			if _rate_key(history.charged_rate(line.item_tax_template)) in ambiguous:
+				# One suggestion per rate cannot match lines that were booked to
+				# different accounts at that rate, so they are counted apart.
+				split.add(
+					account_ok, template_ok, weight, suggested=bool(predicted and predicted.expense_account)
+				)
+				continue
 			for tally in (totals, by_source[source]):
 				tally.add(
 					account_ok, template_ok, weight, suggested=bool(predicted and predicted.expense_account)
@@ -126,6 +142,7 @@ def run(
 		"lines": totals.as_dict(),
 		"by_source": {source: tally.as_dict() for source, tally in sorted(by_source.items())},
 		"llm_usage": tokens,
+		"split_rate_lines": split.as_dict(),
 		"misses": misses,
 	}
 
@@ -162,7 +179,7 @@ def _booked_lines(invoice: str) -> list:
 	return frappe.get_all(
 		"Purchase Invoice Item",
 		filters={"parent": invoice, "parenttype": "Purchase Invoice"},
-		fields=["expense_account", "item_tax_template", "base_net_amount", "description"],
+		fields=["expense_account", "item_tax_template", "base_net_amount", "net_amount", "description"],
 		order_by="idx asc",
 	)
 
@@ -173,8 +190,18 @@ def _groups(lines: list) -> list[VatGroup]:
 	for line in lines:
 		rate = history.charged_rate(line.item_tax_template)
 		group = groups.setdefault(_rate_key(rate), VatGroup(net=0.0, rate=rate, description=line.description))
-		group.net += flt(line.base_net_amount)
+		# Invoice currency, as extraction reads it off the letter.
+		group.net += flt(line.net_amount)
 	return list(groups.values())
+
+
+def _split_rates(lines: list) -> set:
+	"""Rates at which the invoice's lines were booked more than one way."""
+	seen: dict = {}
+	for line in lines:
+		key = _rate_key(history.charged_rate(line.item_tax_template))
+		seen.setdefault(key, set()).add((line.expense_account, line.item_tax_template))
+	return {key for key, ways in seen.items() if len(ways) > 1}
 
 
 def _rate_key(rate: float | None) -> float | None:

@@ -134,12 +134,12 @@
    "options": "\nNone\nFlow"
   },
   {
-   "depends_on": "eval:doc.extractor=='Flow'",
+   "depends_on": "eval:doc.extractor=='Flow' || doc.booking_use_llm",
    "description": "Name of an enabled Flow Model. Needs the Frappe Flow app. Letter text leaves the site for the model's provider.",
    "fieldname": "flow_model",
    "fieldtype": "Data",
    "label": "Flow Model",
-   "mandatory_depends_on": "eval:doc.extractor=='Flow'"
+   "mandatory_depends_on": "eval:doc.extractor=='Flow' || doc.booking_use_llm"
   },
   {
    "fieldname": "accounting_section",
@@ -203,7 +203,7 @@
  "index_web_pages_for_search": 0,
  "issingle": 1,
  "links": [],
- "modified": "2026-09-29 12:00:00.000000",
+ "modified": "2026-09-30 09:00:00.000000",
  "modified_by": "Administrator",
  "module": "ePost Connector",
  "name": "ePost Settings",

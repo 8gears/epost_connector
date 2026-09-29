@@ -69,7 +69,7 @@ def create_purchase_invoice(letter_name: str, supplier: str | None = None) -> di
 	if not company:
 		frappe.throw(_("Set a Company in ePost Settings before importing letters"))
 
-	supplier = supplier or letter.supplier or _suggestion(letter).get("supplier") or find_supplier(letter)
+	supplier = supplier or letter.supplier or _suggested_supplier(letter) or find_supplier(letter)
 	if not supplier:
 		frappe.throw(
 			_(
@@ -77,6 +77,10 @@ def create_purchase_invoice(letter_name: str, supplier: str | None = None) -> di
 				"the Create Purchase Invoice dialog."
 			).format(letter.vendor_name or letter.sender_name or letter.title)
 		)
+
+	if letter.booking_suggestion and _suggestion(letter).get("supplier") != supplier:
+		# The accounts and VAT came from the other supplier's history.
+		_resuggest(letter, supplier)
 
 	invoice = _build_invoice(letter, settings, company, supplier)
 	invoice.insert(ignore_permissions=True)
@@ -96,7 +100,33 @@ def suggest_supplier(letter_name: str) -> dict:
 	"""What `create_purchase_invoice` would pick, for the Desk dialog default."""
 	letter = frappe.get_doc(DOCTYPE, letter_name)
 	letter.check_permission("read")
-	return {"supplier": letter.supplier or _suggestion(letter).get("supplier") or find_supplier(letter)}
+	return {"supplier": letter.supplier or _suggested_supplier(letter) or find_supplier(letter)}
+
+
+def _suggested_supplier(letter: Any) -> str | None:
+	"""The supplier stored with the booking suggestion, if it can still be used.
+
+	The suggestion is a snapshot; the Supplier may have been renamed, deleted or
+	disabled since, and a dead link would fail the insert instead of falling back
+	to matching.
+	"""
+	name = _suggestion(letter).get("supplier")
+	if name and frappe.db.get_value("Supplier", name, "disabled") == 0:
+		return name
+	return None
+
+
+def _resuggest(letter: Any, supplier: str) -> None:
+	from epost_connector.booking.letter import suggest_for_letter
+
+	letter.supplier = supplier
+	try:
+		suggest_for_letter(letter)
+	except Exception:
+		letter.booking_suggestion = None
+		frappe.log_error(
+			"ePost: booking suggestion failed", reference_doctype=DOCTYPE, reference_name=letter.name
+		)
 
 
 def find_supplier(letter: Any) -> str | None:
@@ -169,8 +199,11 @@ def _build_invoice(letter: Any, settings: Any, company: str, supplier: str):
 			invoice.append("items", _signed(invoice, _suggested_item(letter, settings, company, line)))
 		invoice.remarks += "\n" + _("Booking suggested from: {0}").format(_sources(lines))
 		template = suggestion.get("taxes_and_charges")
-		if template and all(line.get("item_tax_template") for line in lines):
-			_apply_taxes_template(invoice, template)
+		if all(line.get("item_tax_template") for line in lines):
+			if template:
+				_apply_taxes_template(invoice, template)
+			else:
+				invoice.remarks += "\n" + _missing_taxes_note({line["item_tax_template"] for line in lines})
 	else:
 		invoice.append("items", _signed(invoice, _build_item(letter, settings, company)))
 	invoice.set_missing_values()
@@ -193,11 +226,12 @@ def _set_currency(invoice, letter: Any, company: str, supplier: str, posting_dat
 	if not letter.currency or letter.currency == company_currency:
 		return
 
-	rate = _exchange_rate(letter.currency, company_currency, posting_date)
-	if rate and _supplier_accepts_currency(supplier, company, letter.currency, company_currency):
-		invoice.currency = letter.currency
-		invoice.conversion_rate = rate
-		return
+	if _supplier_accepts_currency(supplier, company, letter.currency, company_currency):
+		rate = _exchange_rate(letter.currency, company_currency, posting_date)
+		if rate:
+			invoice.currency = letter.currency
+			invoice.conversion_rate = rate
+			return
 	invoice.remarks += _("\nDetected currency on the letter: {0}").format(letter.currency)
 
 
@@ -207,8 +241,11 @@ def _supplier_accepts_currency(supplier: str, company: str, currency: str, compa
 	account_currency = get_party_account_currency("Supplier", supplier, company)
 	if account_currency and account_currency != company_currency:
 		return currency == account_currency
-	if get_party_gle_currency("Supplier", supplier, company):
-		return True
+	ledger_currency = get_party_gle_currency("Supplier", supplier, company)
+	if ledger_currency:
+		# Entries in the company currency leave the invoice currency free; entries
+		# in another currency bind the supplier to it.
+		return ledger_currency == company_currency or ledger_currency == currency
 	return account_currency == currency or bool(
 		frappe.db.get_single_value(
 			"Accounts Settings", "allow_multi_currency_invoices_against_single_party_account"
@@ -234,8 +271,8 @@ def _suggestion(letter: Any) -> dict:
 
 
 def _signed(invoice, item: dict) -> dict:
-	item["rate"] = abs(flt(item["rate"]))
 	if invoice.is_return:
+		item["rate"] = abs(flt(item["rate"]))
 		item["qty"] = -1
 	return item
 
@@ -254,12 +291,29 @@ def _suggested_item(letter: Any, settings: Any, company: str, line: dict) -> dic
 	return item
 
 
+def _missing_taxes_note(templates: set[str]) -> str:
+	if len(templates) > 1:
+		return _(
+			"VAT not applied: the lines use different VAT templates and ePost Settings has no Mixed Purchase Taxes Template."
+		)
+	return _("VAT not applied: there is no Purchase Taxes and Charges Template named {0}.").format(
+		next(iter(templates))
+	)
+
+
 def _apply_taxes_template(invoice, template: str) -> None:
 	from erpnext.controllers.accounts_controller import get_taxes_and_charges
 
+	try:
+		rows = get_taxes_and_charges("Purchase Taxes and Charges Template", template) or []
+	except frappe.DoesNotExistError:
+		invoice.remarks += "\n" + _(
+			"VAT not applied: Purchase Taxes and Charges Template {0} no longer exists."
+		).format(template)
+		return
 	invoice.taxes_and_charges = template
 	invoice.set("taxes", [])
-	for row in get_taxes_and_charges("Purchase Taxes and Charges Template", template) or []:
+	for row in rows:
 		# Suggested lines carry net amounts; the template adds the VAT on top.
 		row["included_in_print_rate"] = 0
 		invoice.append("taxes", row)

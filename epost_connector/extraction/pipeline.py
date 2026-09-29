@@ -5,7 +5,8 @@ from __future__ import annotations
 from typing import Any
 
 import frappe
-from frappe.utils import flt, getdate
+from frappe import _
+from frappe.utils import cint, flt, getdate
 
 from epost_connector.extraction.base import ExtractionResult
 from epost_connector.extraction.noop import NoopExtractor
@@ -65,6 +66,9 @@ def analyze_all(limit: int | None = None) -> dict:
 	frappe.only_for(("System Manager", "Accounts Manager"))
 	from frappe.utils.background_jobs import is_job_enqueued
 
+	if isinstance(get_extractor(frappe.db.get_single_value("ePost Settings", "extractor")), NoopExtractor):
+		frappe.throw(_("Choose an extractor in ePost Settings first; with None there is nothing to analyse."))
+
 	if is_job_enqueued(ANALYZE_JOB_ID):
 		return {"job_id": ANALYZE_JOB_ID, "already_running": True}
 
@@ -74,7 +78,7 @@ def analyze_all(limit: int | None = None) -> dict:
 		timeout=7200,
 		job_id=ANALYZE_JOB_ID,
 		deduplicate=True,
-		limit=int(limit) if limit else None,
+		limit=cint(limit) or None,
 	)
 	return {"job_id": ANALYZE_JOB_ID, "already_running": False}
 
@@ -136,9 +140,9 @@ def _suggest_booking(letter: Any) -> None:
 
 	The suggestion only reads, so there is nothing to roll back.
 	"""
-	from epost_connector.booking.letter import suggest_for_letter
-
 	try:
+		from epost_connector.booking.letter import suggest_for_letter
+
 		suggest_for_letter(letter)
 	except Exception:
 		frappe.log_error(

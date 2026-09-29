@@ -80,21 +80,26 @@ def fill(
 		return
 
 	rows = answer.get("lines")
+	answered: set[int] = set()
 	for row in rows if isinstance(rows, list) else []:
-		if not isinstance(row, dict):
-			continue
-		index = row.get("index")
-		if not isinstance(index, int) or not 0 <= index < len(lines):
+		index = _index(row, len(lines))
+		if index is None or index in answered:
 			continue
 		account, template = row.get("expense_account"), row.get("item_tax_template")
-		if not isinstance(account, str) or not isinstance(template, str | None):
+		if not isinstance(account, str) or account not in accounts:
 			continue
-		if account not in accounts or (template and template not in templates):
-			continue
+		answered.add(index)
 		line = lines[index]
 		line.expense_account = account
 		line.account_source = "LLM"
-		if template and not line.item_tax_template:
+		# A template the company uses can still be wrong for this line's rate, so
+		# it is kept only when it matches; the account stands either way.
+		if (
+			isinstance(template, str)
+			and template in templates
+			and not line.item_tax_template
+			and history.rate_fits(template, line.rate)
+		):
 			line.item_tax_template = template
 			line.template_source = "LLM"
 		if row.get("reason"):
@@ -102,53 +107,44 @@ def fill(
 		yield line, min(max(flt(row.get("confidence")), 0.0), MAX_CONFIDENCE)
 
 
+def _index(row, count: int) -> int | None:
+	"""The line index a row answers, or None. `True` is not an index, `1.0` is."""
+	if not isinstance(row, dict):
+		return None
+	value = row.get("index")
+	if isinstance(value, bool) or not isinstance(value, int | float) or value != int(value):
+		return None
+	index = int(value)
+	return index if 0 <= index < count else None
+
+
 def _choices(company: str, as_of, excluded: set[str]) -> tuple[dict, dict, list[str]]:
 	"""Accounts and templates in use, and one booking example per supplier."""
-	filters = {"docstatus": 1, "company": company}
-	if as_of:
-		filters["posting_date"] = ("<", getdate(as_of))
-	invoices = frappe.get_all(
-		"Purchase Invoice", filters=filters, fields=["name", "supplier", "posting_date"]
-	)
-	invoices = [inv for inv in invoices if inv.name not in excluded]
-	if not invoices:
+	lines = history.past_lines(None, company, as_of, excluded)
+	if not lines:
 		return {}, {}, []
 
-	supplier_of = {inv.name: inv.supplier for inv in invoices}
-	rows = frappe.get_all(
-		"Purchase Invoice Item",
-		filters={"parent": ("in", list(supplier_of)), "parenttype": "Purchase Invoice"},
-		fields=["parent", "expense_account", "item_tax_template", "cost_center", "base_net_amount"],
-	)
-	dates = {inv.name: inv.posting_date for inv in invoices}
 	by_supplier: dict[str, list[history.PastLine]] = {}
-	for row in rows:
-		if not row.expense_account:
-			continue
-		by_supplier.setdefault(supplier_of[row.parent], []).append(
-			history.PastLine(
-				invoice=row.parent,
-				posting_date=getdate(dates[row.parent]),
-				expense_account=row.expense_account,
-				item_tax_template=row.item_tax_template or None,
-				cost_center=row.cost_center or None,
-				amount=flt(row.base_net_amount),
-			)
-		)
+	for line in lines:
+		by_supplier.setdefault(line.supplier, []).append(line)
 
-	account_names = {r.expense_account for r in rows if r.expense_account}
-	template_names = {r.item_tax_template for r in rows if r.item_tax_template}
-	accounts = {
-		a.name: a.account_name
-		for a in frappe.get_all(
+	accounts = dict(
+		frappe.get_all(
 			"Account",
-			filters={"name": ("in", list(account_names)), "is_group": 0, "disabled": 0},
+			filters={"name": ("in", list({line.expense_account for line in lines})), "is_group": 0},
 			fields=["name", "account_name"],
+			as_list=True,
 		)
+	)
+	templates = {
+		t: history.charged_rate(t)
+		for t in {line.item_tax_template for line in lines if line.item_tax_template}
 	}
-	templates = {t: history.charged_rate(t) for t in template_names}
-
-	countries = dict(frappe.get_all("Supplier", fields=["name", "country"], as_list=True))
+	countries = dict(
+		frappe.get_all(
+			"Supplier", filters={"name": ("in", list(by_supplier))}, fields=["name", "country"], as_list=True
+		)
+	)
 	weighted = []
 	for supplier, past in by_supplier.items():
 		ranked = history.rank(past, as_of or nowdate())
@@ -201,5 +197,8 @@ def _prompt(context, lines: list, accounts: dict, templates: dict, examples: lis
 
 def _ask(model_name: str, messages: list[dict]) -> dict | None:
 	answer, usage = ask_json(model_name, messages, SCHEMA)
+	# Read by the backtest, which counts calls apart from tokens: a provider
+	# may answer without reporting usage.
+	frappe.local.epost_llm_calls = (getattr(frappe.local, "epost_llm_calls", None) or 0) + 1
 	frappe.local.epost_llm_usage = usage
 	return answer

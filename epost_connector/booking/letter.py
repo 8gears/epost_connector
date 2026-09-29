@@ -29,7 +29,14 @@ def refresh(letter_name: str) -> dict:
 
 
 def suggest_for_letter(letter: Any) -> BookingSuggestion | None:
-	"""Suggest, write the result onto `letter` (unsaved), and return it."""
+	"""Suggest, write the result onto `letter` (unsaved), and return it.
+
+	The previous suggestion is cleared first. A letter re-read as a contract, or
+	with its amounts gone, must not keep lines the importer would still use.
+	"""
+	letter.booking_suggestion = None
+	letter.booking_source = None
+	letter.booking_confidence = 0
 	if letter.document_kind not in BOOKABLE_KINDS or not (letter.amount or letter.net_amount):
 		return None
 

@@ -180,7 +180,7 @@
   },
   {
    "collapsible": 1,
-   "depends_on": "eval:doc.vendor_name || doc.invoice_number || doc.invoice_date || doc.due_date || doc.currency || doc.amount || doc.vat_amount || doc.net_amount || doc.vendor_tax_id",
+   "depends_on": "eval:doc.vendor_name || doc.invoice_number || doc.invoice_date || doc.due_date || doc.currency || doc.amount || doc.vat_amount || doc.net_amount || doc.vendor_tax_id || doc.vendor_country || doc.iban || doc.qr_reference",
    "description": "Filled by the configured extractor. Hidden until one has read something off the letter.",
    "fieldname": "extraction_section",
    "fieldtype": "Section Break",
@@ -370,7 +370,7 @@
  ],
  "index_web_pages_for_search": 0,
  "links": [],
- "modified": "2026-09-29 12:00:00.000000",
+ "modified": "2026-09-30 09:00:00.000000",
  "modified_by": "Administrator",
  "module": "ePost Connector",
  "name": "ePost Letter",

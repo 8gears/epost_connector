@@ -44,6 +44,9 @@ function set_headline(frm) {
 	}
 }
 
+// Mirrors booking/letter.py BOOKABLE_KINDS; an unclassified letter counts.
+const BOOKABLE_KINDS = ["", "Invoice", "Credit Note", "Receipt"];
+
 function add_actions(frm) {
 	if (frm.is_new()) {
 		return;
@@ -54,7 +57,11 @@ function add_actions(frm) {
 	if (frm.doc.file) {
 		frm.add_custom_button(__("Analyze"), () => analyze(frm), __("Actions"));
 	}
-	if (!terminal && (frm.doc.amount || frm.doc.net_amount)) {
+	if (
+		!terminal &&
+		BOOKABLE_KINDS.includes(frm.doc.document_kind || "") &&
+		(frm.doc.amount || frm.doc.net_amount)
+	) {
 		frm.add_custom_button(__("Suggest Booking"), () => suggest_booking(frm), __("Actions"));
 	}
 	if (!terminal) {

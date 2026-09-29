@@ -245,16 +245,19 @@ punctuation and legal-form suffixes). An ambiguous match is treated as no match
 so you are asked rather than handed a guess.
 
 When the letter carries a booking suggestion (see *Booking suggestion* below),
-the draft gets one line per suggested VAT group, each with its expense account,
-item tax template and cost center, plus the matching Purchase Taxes and Charges
-Template. Otherwise one item line is created, using `Default Item` if set,
+the draft gets one line per suggested VAT group, with the expense account, item
+tax template and cost center suggested for it, plus the matching Purchase Taxes
+and Charges Template. Any of these can be missing when no source could suggest
+it, and the human completes the draft. A letter classified as a credit note is
+drafted as a debit note (a return). Otherwise one item line is created, using `Default Item` if set,
 otherwise a non-stock line carrying the letter title. `bill_no`, `bill_date` and
 `due_date` are filled from extraction fields when present, and the letter's PDF
 is linked to the invoice.
 
-The letter's currency is used, with ERPNext's buying exchange rate, when ERPNext
-accepts that currency for the supplier: the supplier already has ledger entries,
-its payable account is in that currency, or multi-currency invoices are allowed.
+The letter's currency is used when ERPNext accepts it for the supplier (its
+ledger entries or payable account are in that currency or the company currency,
+or multi-currency invoices are allowed) **and** ERPNext has a buying exchange
+rate for the posting date.
 Otherwise the draft stays in the company currency and the detected currency is
 noted in `remarks`.
 
@@ -299,16 +302,20 @@ sources are asked in a fixed order, each filling only what is still open:
 2. **History**: the supplier's own submitted Purchase Invoices, grouped by
    account and item tax template and weighted by amount, halved per year of
    age. The leading combination is used when it holds at least half the weight,
-   and its share is the confidence.
+   and its share is the confidence. The cost center is not part of the grouping;
+   the one carrying most of that combination's weight is suggested. Lines on
+   accounts disabled since are ignored.
 3. **ePost Booking Rule** rows with *Apply = After history*: defaults such as
    "VAT not charged, foreign vendor, account starting with 4 → reverse-charge
    template". These may also replace a template the model chose.
 
 With **Use Flow Model for Unknown Suppliers** on, lines still without an account
 go to the Flow model in one call per letter. It is shown the accounts and item
-tax templates the company has booked supplier invoices to, and one example per
-known supplier, and may answer only from those lists. Its confidence is capped
-below history's.
+tax templates the company has booked supplier invoices to, and one booking
+example per supplier for the 150 suppliers with the most booked weight, and may
+answer only from those lists. A template whose rate does not match the line is
+dropped and the account kept. The model's confidence is capped at 0.6, so it
+never outranks a supplier history that is at least 60 % consistent.
 
 A template's VAT rate is read from the Purchase Taxes and Charges Template of the
 same name, with `Deduct` rows subtracted, so a reverse-charge template counts as

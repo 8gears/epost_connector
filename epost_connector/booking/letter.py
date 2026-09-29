@@ -72,8 +72,14 @@ def vat_groups(letter: Any, answer: dict) -> list[VatGroup]:
 	from the totals when they allow it, and a gross amount with no VAT on top is
 	0 %, which on a foreign invoice is the reverse-charge case.
 	"""
-	descriptions = _descriptions_by_rate(answer.get("line_items") or [])
-	rows = [r for r in answer.get("vat_breakdown") or [] if isinstance(r, dict) and flt(r.get("net"))]
+	items = answer.get("line_items")
+	descriptions = _descriptions_by_rate(items if isinstance(items, list) else [])
+	breakdown = answer.get("vat_breakdown")
+	rows = [
+		r
+		for r in (breakdown if isinstance(breakdown, list) else [])
+		if isinstance(r, dict) and flt(r.get("net"))
+	]
 	if rows:
 		return [
 			VatGroup(

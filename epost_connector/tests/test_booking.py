@@ -45,7 +45,7 @@ class BookingTestCase(ePostSiteTestCase):
 	def setUp(self) -> None:
 		super().setUp()
 		self.company = ensure_company()
-		ensure_fiscal_years(2024, datetime.date.today().year)
+		ensure_fiscal_years(2021, 2024, datetime.date.today().year)
 		self.templates = ensure_tax_setup(self.company)
 		self.acct_a, self.acct_b, self.acct_c = expense_accounts(self.company)
 		purge_booked(SUPPLIERS)
@@ -127,6 +127,20 @@ class HistoryTest(BookingTestCase):
 			[(self.acct_a, self.templates["input"]), (self.acct_b, self.templates["reverse"])],
 		)
 
+	def test_without_a_cut_off_date_older_bookings_weigh_less(self):
+		"""Production passes no date; age must still count, relative to today."""
+		book_invoice(self.company, KNOWN, [(self.acct_a, self.templates["input"], 100)], "2021-06-01")
+		book_invoice(
+			self.company,
+			KNOWN,
+			[(self.acct_b, self.templates["input"], 60)],
+			datetime.date.today().isoformat(),
+		)
+
+		(line,) = suggest(self.context(KNOWN)).lines
+
+		self.assertEqual(line.expense_account, self.acct_b)
+
 	def test_history_after_the_cut_off_date_is_not_used(self):
 		book_invoice(self.company, KNOWN, [(self.acct_a, self.templates["input"], 100)], "2024-06-01")
 
@@ -184,6 +198,10 @@ class RuleTest(BookingTestCase):
 	def test_a_rule_needs_something_to_set(self):
 		with self.assertRaises(frappe.ValidationError):
 			self.rule(apply_when=BEFORE_HISTORY, supplier=KNOWN)
+
+	def test_a_rule_needs_a_company_because_its_targets_have_one(self):
+		with self.assertRaises(frappe.MandatoryError):
+			self.rule(apply_when=BEFORE_HISTORY, company=None, expense_account=self.acct_a)
 
 
 class LlmFallbackTest(BookingTestCase):
@@ -253,6 +271,20 @@ class LlmFallbackTest(BookingTestCase):
 
 		self.assertEqual(line.item_tax_template, self.templates["reverse"])
 		self.assertEqual(line.template_source, "Rule")
+
+	def test_a_malformed_answer_leaves_the_line_open_instead_of_failing(self):
+		book_invoice(self.company, KNOWN, [(self.acct_b, self.templates["input"], 100)])
+		for answer in (
+			{"lines": {}},
+			{"lines": ["x", 3]},
+			{"lines": [{"index": 0, "expense_account": [1], "item_tax_template": None}]},
+		):
+			with (
+				self.subTest(answer=answer),
+				patch("epost_connector.booking.llm.ask_json", return_value=(answer, None)),
+			):
+				(line,) = suggest(self.context(NEW), llm_model="any").lines
+				self.assertIsNone(line.expense_account)
 
 	def test_without_a_model_nothing_is_asked(self):
 		with patch("epost_connector.booking.llm.ask_json") as ask:

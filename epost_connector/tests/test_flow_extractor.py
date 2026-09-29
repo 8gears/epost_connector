@@ -93,6 +93,12 @@ class FlowExtractorTest(ePostSiteTestCase):
 		self.assertEqual(content[1]["type"], "file")
 		self.assertTrue(content[1]["file"]["file_data"].startswith("data:application/pdf;base64,"))
 
+	def test_list_fields_of_the_wrong_shape_are_ignored(self):
+		result, _ = self.extract({**ANSWER, "line_items": {"a": 1}, "vat_breakdown": "8.1"})
+
+		self.assertEqual(result.line_items, [])
+		self.assertEqual(result.vat_breakdown, [])
+
 	def test_no_answer_is_no_result(self):
 		result, _ = self.extract(None)
 

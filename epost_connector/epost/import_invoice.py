@@ -156,17 +156,23 @@ def _build_invoice(letter: Any, settings: Any, company: str, supplier: str):
 
 	_set_currency(invoice, letter, company, supplier, posting_date)
 
+	# A supplier's credit note lowers what is owed, so it is drafted as ERPNext's
+	# debit note: a return with negative quantities. Amounts are taken as
+	# magnitudes because letters print a credit either way round.
+	if letter.document_kind == "Credit Note":
+		invoice.is_return = 1
+
 	suggestion = _suggestion(letter)
 	lines = [line for line in suggestion.get("lines") or [] if flt(line.get("net"))]
 	if lines:
 		for line in lines:
-			invoice.append("items", _suggested_item(letter, settings, company, line))
+			invoice.append("items", _signed(invoice, _suggested_item(letter, settings, company, line)))
 		invoice.remarks += "\n" + _("Booking suggested from: {0}").format(_sources(lines))
 		template = suggestion.get("taxes_and_charges")
 		if template and all(line.get("item_tax_template") for line in lines):
 			_apply_taxes_template(invoice, template)
 	else:
-		invoice.append("items", _build_item(letter, settings, company))
+		invoice.append("items", _signed(invoice, _build_item(letter, settings, company)))
 	invoice.set_missing_values()
 	return invoice
 
@@ -225,6 +231,13 @@ def _suggestion(letter: Any) -> dict:
 	except ValueError:
 		return {}
 	return value if isinstance(value, dict) else {}
+
+
+def _signed(invoice, item: dict) -> dict:
+	item["rate"] = abs(flt(item["rate"]))
+	if invoice.is_return:
+		item["qty"] = -1
+	return item
 
 
 def _suggested_item(letter: Any, settings: Any, company: str, line: dict) -> dict:

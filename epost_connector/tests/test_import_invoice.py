@@ -207,6 +207,22 @@ class InvoiceLineTest(ImportTestCase):
 		self.assertEqual(line.rate, 1234.56)
 		self.assertEqual(line.amount, 1234.56)
 
+	def test_a_credit_note_is_drafted_as_a_debit_note_that_lowers_what_is_owed(self):
+		"""However the letter prints the credit, the draft reduces the payable."""
+		for printed in (50.0, -50.0):
+			with self.subTest(printed=printed):
+				self.letter_with(vendor_name=SUPPLIER, amount=printed, document_kind="Credit Note")
+
+				result = create_purchase_invoice(self.letter_doc("inbox-1").name)
+
+				invoice = frappe.get_doc("Purchase Invoice", result["purchase_invoice"])
+				self.assertEqual(invoice.is_return, 1)
+				self.assertEqual(invoice.docstatus, 0)
+				self.assertEqual(invoice.items[0].qty, -1)
+				self.assertEqual(invoice.grand_total, -50.0)
+				frappe.delete_doc("Purchase Invoice", invoice.name, force=True, ignore_permissions=True)
+				self.letter_with(purchase_invoice=None, status="Downloaded")
+
 
 class CurrencyTest(ImportTestCase):
 	def test_the_company_currency_is_taken_as_it_stands(self):

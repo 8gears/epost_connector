@@ -21,7 +21,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import date
 
 import frappe
-from frappe.utils import flt
+from frappe.utils import flt, nowdate
 
 from epost_connector.booking import history
 
@@ -116,7 +116,8 @@ def suggest(
 	ranked: list[history.Combination] = []
 	if context.supplier:
 		ranked = history.rank(
-			history.past_lines(context.supplier, context.company, as_of, exclude_invoices), as_of
+			history.past_lines(context.supplier, context.company, as_of, exclude_invoices),
+			as_of or nowdate(),
 		)
 
 	groups = context.groups or [VatGroup(net=0.0)]
@@ -288,7 +289,7 @@ def _load_rules(company: str) -> list:
 		return []
 	return frappe.get_all(
 		RULE_DOCTYPE,
-		filters={"enabled": 1, "company": ("in", [company, "", None])},
+		filters={"enabled": 1, "company": company},
 		fields=[
 			"name",
 			"apply_when",

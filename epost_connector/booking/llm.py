@@ -16,7 +16,7 @@ from collections.abc import Iterable, Iterator
 from datetime import date
 
 import frappe
-from frappe.utils import flt, getdate
+from frappe.utils import flt, getdate, nowdate
 
 from epost_connector.ai import ask_json
 from epost_connector.booking import history
@@ -79,11 +79,16 @@ def fill(
 	if not answer:
 		return
 
-	for row in answer.get("lines") or []:
+	rows = answer.get("lines")
+	for row in rows if isinstance(rows, list) else []:
+		if not isinstance(row, dict):
+			continue
 		index = row.get("index")
 		if not isinstance(index, int) or not 0 <= index < len(lines):
 			continue
 		account, template = row.get("expense_account"), row.get("item_tax_template")
+		if not isinstance(account, str) or not isinstance(template, str | None):
+			continue
 		if account not in accounts or (template and template not in templates):
 			continue
 		line = lines[index]
@@ -146,7 +151,7 @@ def _choices(company: str, as_of, excluded: set[str]) -> tuple[dict, dict, list[
 	countries = dict(frappe.get_all("Supplier", fields=["name", "country"], as_list=True))
 	weighted = []
 	for supplier, past in by_supplier.items():
-		ranked = history.rank(past, as_of)
+		ranked = history.rank(past, as_of or nowdate())
 		top = ranked[0]
 		weighted.append(
 			(

@@ -26,6 +26,7 @@ class ePostBookingRule(Document):
 
 		self._validate_account("expense_account")
 		self._validate_cost_center()
+		self._validate_item_tax_template()
 
 	def _validate_account(self, fieldname: str) -> None:
 		account = self.get(fieldname)
@@ -36,7 +37,7 @@ class ePostBookingRule(Document):
 			frappe.throw(_("{0} is a group account; pick a ledger account").format(account))
 		if row.disabled:
 			frappe.throw(_("{0} is disabled").format(account))
-		if self.company and row.company != self.company:
+		if row.company != self.company:
 			frappe.throw(_("{0} belongs to {1}, not {2}").format(account, row.company, self.company))
 
 	def _validate_cost_center(self) -> None:
@@ -45,5 +46,14 @@ class ePostBookingRule(Document):
 		row = frappe.db.get_value("Cost Center", self.cost_center, ["is_group", "company"], as_dict=True)
 		if row.is_group:
 			frappe.throw(_("{0} is a group cost center").format(self.cost_center))
-		if self.company and row.company != self.company:
+		if row.company != self.company:
 			frappe.throw(_("{0} belongs to {1}, not {2}").format(self.cost_center, row.company, self.company))
+
+	def _validate_item_tax_template(self) -> None:
+		if not self.item_tax_template:
+			return
+		company = frappe.db.get_value("Item Tax Template", self.item_tax_template, "company")
+		if company and company != self.company:
+			frappe.throw(
+				_("{0} belongs to {1}, not {2}").format(self.item_tax_template, company, self.company)
+			)

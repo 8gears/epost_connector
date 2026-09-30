@@ -80,8 +80,9 @@ REMOVED_FIELDS = (
 	"vat_amount",
 	"extraction_raw",
 	"booking_suggestion",
-	"document_kind",
 )
+# `document_kind` is back on the letter as pipeline state: the type a person
+# confirmed in the review, which the extraction log cannot hold.
 
 
 class NoopPipelineTest(ePostSiteTestCase):

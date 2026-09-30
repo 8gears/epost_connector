@@ -63,6 +63,16 @@ def process_letter(letter: Any, force: bool = False, confirmed: bool = False) ->
 		supplier, source, detail = match.supplier, match.source, match.reason
 	if confirmed or source == "LLM":
 		matching.learn(supplier, log, confirmed=confirmed)
+	if confirmed:
+		# What was just learned may be the answer for other letters from the
+		# same issuer that are waiting too.
+		frappe.enqueue(
+			"epost_connector.inbox.process.retry_waiting",
+			queue="long",
+			enqueue_after_commit=True,
+			job_id="epost-retry-waiting",
+			deduplicate=True,
+		)
 	letter.supplier = supplier
 	letter.flags.supplier_found = _supplier_note(source, detail, log)
 
@@ -92,6 +102,29 @@ def process_letter_by_name(letter_name: str, confirmed: bool = False) -> None:
 	"""Background job: continue a letter after a reviewer chose its supplier."""
 	process_letter(frappe.get_doc(DOCTYPE, letter_name), confirmed=confirmed)
 	frappe.db.commit()
+
+
+def retry_waiting() -> dict:
+	"""Match again every letter waiting for its supplier, without calling the model.
+
+	Runs after a reviewer confirmed a supplier: the learned VAT id or name now
+	matches other letters from that issuer exactly. Letters still unmatched stay
+	waiting; the model already answered for them and would answer the same.
+	"""
+	names = frappe.get_all(DOCTYPE, filters={"status": "Waiting for Supplier"}, pluck="name")
+	counts = {"letters": len(names), "matched": 0}
+	for name in names:
+		letter = frappe.get_doc(DOCTYPE, name)
+		log = _log(letter)
+		if not log or letter.supplier:
+			continue
+		if matching.find(letter, log, model=None).supplier:
+			letter.flags.reprocess = True
+			letter.status = "Downloaded"
+			process_letter(letter)
+			frappe.db.commit()
+			counts["matched"] += 1
+	return counts
 
 
 def process_downloaded(limit: int | None = None) -> dict:

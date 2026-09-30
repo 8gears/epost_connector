@@ -183,3 +183,22 @@ class ProcessTest(ProcessTestCase):
 			process_letter(doc, force=True)
 
 		self.assertEqual(frappe.db.count("Supplier Alias", {"alias_name": "Someone Unrelated AG"}), 0)
+
+	def test_a_confirmed_supplier_releases_other_letters_from_the_same_issuer(self):
+		from epost_connector.inbox.process import retry_waiting
+
+		with _returning(_invoice(vendor_name="Brand New Vendor GmbH", vendor_tax_id="CHE-777.666.555 MWST")):
+			sync_letters()
+			waiting = frappe.get_all("ePost Letter", filters={"status": "Waiting for Supplier"}, pluck="name")
+			self.assertGreater(len(waiting), 1, "the mock letterbox should hold several letters")
+
+			first = frappe.get_doc("ePost Letter", waiting[0])
+			with patch("frappe.enqueue"):
+				first.supplier = self.supplier
+				first.save(ignore_permissions=True)
+				process_letter_by_name(first.name, confirmed=True)
+
+			result = retry_waiting()
+
+		self.assertEqual(result["matched"], len(waiting) - 1)
+		self.assertEqual(frappe.db.count("ePost Letter", {"status": "Waiting for Supplier"}), 0)

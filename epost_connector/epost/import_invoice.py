@@ -83,7 +83,7 @@ def create_purchase_invoice(letter_name: str, supplier: str | None = None) -> di
 		_resuggest(letter, supplier)
 
 	invoice = _build_invoice(letter, settings, company, supplier)
-	invoice.insert(ignore_permissions=True)
+	invoice.insert(ignore_permissions=True, set_name=_prompted_name(invoice))
 
 	_attach_letter_pdf(letter, invoice.name)
 
@@ -101,6 +101,26 @@ def suggest_supplier(letter_name: str) -> dict:
 	letter = frappe.get_doc(DOCTYPE, letter_name)
 	letter.check_permission("read")
 	return {"supplier": letter.supplier or _suggested_supplier(letter) or find_supplier(letter)}
+
+
+def _prompted_name(invoice) -> str | None:
+	"""A name for sites that name Purchase Invoices by prompt, else None.
+
+	A site that migrated its old invoice numbers typically sets `autoname` to
+	`prompt` so they keep those names. Insert then refuses a document without a
+	name, so the draft takes the next number of ERPNext's own naming series.
+	"""
+	meta = frappe.get_meta("Purchase Invoice")
+	if (meta.autoname or "").lower() != "prompt":
+		return None
+	from frappe.model.naming import make_autoname
+
+	options = [o for o in (meta.get_field("naming_series").options or "").split("\n") if o.strip()]
+	returns = [o for o in options if "RET" in o.upper()]
+	series = invoice.naming_series or ((returns or options)[0] if invoice.is_return else options[0])
+	if "#" not in series:
+		series = f"{series.rstrip('.')}.#####"
+	return make_autoname(series, "Purchase Invoice", invoice)
 
 
 def _suggested_supplier(letter: Any) -> str | None:

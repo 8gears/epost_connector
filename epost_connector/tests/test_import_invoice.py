@@ -265,6 +265,20 @@ class InvoiceLineTest(ImportTestCase):
 			"VAT not applied", frappe.get_doc("Purchase Invoice", result["purchase_invoice"]).remarks
 		)
 
+	def test_a_site_that_names_invoices_by_prompt_still_gets_a_draft(self):
+		"""Migrated sites set autoname to prompt to keep their old invoice numbers."""
+		from frappe.custom.doctype.property_setter.property_setter import make_property_setter
+
+		make_property_setter("Purchase Invoice", None, "autoname", "prompt", "Data", for_doctype=True)
+		self.addCleanup(_drop_autoname_setter)
+		frappe.clear_cache(doctype="Purchase Invoice")
+		self.letter_with(vendor_name=SUPPLIER, amount=10.0)
+
+		result = create_purchase_invoice(self.letter_doc("inbox-1").name)
+
+		self.assertTrue(result["purchase_invoice"].startswith("ACC-PINV-"))
+		self.assertEqual(frappe.db.get_value("Purchase Invoice", result["purchase_invoice"], "docstatus"), 0)
+
 
 class CurrencyTest(ImportTestCase):
 	def test_the_company_currency_is_taken_as_it_stands(self):
@@ -469,3 +483,9 @@ def _user_with_letter_write_only(role: str) -> str:
 
 	frappe.db.commit()
 	return email
+
+
+def _drop_autoname_setter() -> None:
+	frappe.db.delete("Property Setter", {"doc_type": "Purchase Invoice", "property": "autoname"})
+	frappe.db.commit()
+	frappe.clear_cache(doctype="Purchase Invoice")

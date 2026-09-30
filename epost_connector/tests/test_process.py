@@ -157,3 +157,12 @@ class ProcessTest(ProcessTestCase):
 			self.assertFalse(process_letter(doc))
 
 		self.assertEqual(self.letter_doc("inbox-1").status, "Drafted")
+
+	def test_an_invoice_dated_before_any_fiscal_year_is_not_bookable(self):
+		with _returning(_invoice(invoice_date="1999-01-15")):
+			sync_letters()
+
+		doc = self.letter_doc("inbox-1")
+		self.assertEqual(doc.status, "Not Bookable")
+		self.assertIn("fiscal year", doc.processing_note)
+		self.assertFalse(doc.purchase_invoice)

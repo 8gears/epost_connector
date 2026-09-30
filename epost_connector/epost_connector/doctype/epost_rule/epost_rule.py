@@ -1,5 +1,5 @@
 # Frappe resolves a controller class by `doctype.replace(" ", "")`, so this
-# class must stay `ePostBookingRule` and cannot be renamed to PascalCase.
+# class must stay `ePostRule` and cannot be renamed to PascalCase.
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from frappe import _
 from frappe.model.document import Document
 
 
-class ePostBookingRule(Document):
+class ePostRule(Document):
 	def validate(self) -> None:
 		# Frappe checks mandatory fields after `validate`, so without this the
 		# first target check would report "belongs to X, not None".
@@ -20,8 +20,18 @@ class ePostBookingRule(Document):
 		if self.foreign_only and self.domestic_only:
 			frappe.throw(_("A rule cannot be both foreign-only and domestic-only"))
 
-		if not (self.expense_account or self.item_tax_template or self.cost_center):
-			frappe.throw(_("Set at least one of Expense Account, Item Tax Template or Cost Center"))
+		if not (
+			self.set_status
+			or self.set_supplier
+			or self.expense_account
+			or self.item_tax_template
+			or self.cost_center
+		):
+			frappe.throw(
+				_(
+					"Set at least one of Set Status, Set Supplier, Expense Account, Item Tax Template or Cost Center"
+				)
+			)
 
 		if self.keyword:
 			try:

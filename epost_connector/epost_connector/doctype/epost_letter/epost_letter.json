@@ -17,7 +17,6 @@
   "letter_type",
   "epost_status",
   "document_types",
-  "document_kind",
   "document_section",
   "file",
   "thumbnail",
@@ -25,32 +24,12 @@
   "content_sha256",
   "preview_section",
   "pdf_preview",
-  "extraction_section",
-  "vendor_name",
-  "vendor_tax_id",
-  "vendor_country",
-  "invoice_number",
-  "invoice_date",
-  "due_date",
-  "iban",
-  "qr_reference",
-  "extraction_column",
-  "currency",
-  "net_amount",
-  "amount",
-  "vat_amount",
-  "extraction_confidence",
-  "extraction_raw",
-  "booking_section",
-  "booking_source",
-  "booking_column",
-  "booking_confidence",
-  "booking_suggestion_section",
-  "booking_suggestion",
-  "accounting_section",
+  "processing_section",
   "supplier",
-  "accounting_column",
+  "processing_note",
+  "processing_column",
   "purchase_invoice",
+  "extraction_log",
   "sync_section",
   "raw_metadata",
   "sync_error"
@@ -100,13 +79,13 @@
   },
   {
    "default": "New",
-   "description": "Pipeline state in ERPNext. It only ever moves forward; the sync never resets it.",
+   "description": "Where the letter is in processing. Everything else on this form is as ePost delivered it.",
    "fieldname": "status",
    "fieldtype": "Select",
    "in_list_view": 1,
    "in_standard_filter": 1,
    "label": "Status",
-   "options": "New\nDownloaded\nAnalyzed\nImported\nIgnored",
+   "options": "New\nDownloaded\nWaiting for Supplier\nDrafted\nNot Bookable\nDuplicate\nIgnored",
    "reqd": 1
   },
   {
@@ -129,15 +108,6 @@
    "in_list_view": 1,
    "in_standard_filter": 1,
    "label": "Document Types",
-   "read_only": 1
-  },
-  {
-   "description": "What the extractor classified the letter as.",
-   "fieldname": "document_kind",
-   "fieldtype": "Select",
-   "in_standard_filter": 1,
-   "label": "Document Kind",
-   "options": "\nInvoice\nCredit Note\nReminder\nReceipt\nContract\nTax Assessment\nCorrespondence\nOther",
    "read_only": 1
   },
   {
@@ -179,165 +149,26 @@
    "label": "PDF Preview"
   },
   {
-   "collapsible": 1,
-   "depends_on": "eval:doc.vendor_name || doc.invoice_number || doc.invoice_date || doc.due_date || doc.currency || doc.amount || doc.vat_amount || doc.net_amount || doc.vendor_tax_id || doc.vendor_country || doc.iban || doc.qr_reference",
-   "description": "Filled by the configured extractor. Hidden until one has read something off the letter.",
-   "fieldname": "extraction_section",
+   "fieldname": "processing_section",
    "fieldtype": "Section Break",
-   "label": "Extraction"
+   "label": "Processing"
   },
   {
-   "fieldname": "vendor_name",
-   "fieldtype": "Data",
-   "label": "Vendor Name",
-   "read_only": 1
-  },
-  {
-   "fieldname": "vendor_tax_id",
-   "fieldtype": "Data",
-   "label": "Vendor Tax ID",
-   "read_only": 1
-  },
-  {
-   "fieldname": "vendor_country",
-   "fieldtype": "Link",
-   "label": "Vendor Country",
-   "options": "Country",
-   "read_only": 1
-  },
-  {
-   "fieldname": "invoice_number",
-   "fieldtype": "Data",
-   "label": "Invoice Number",
-   "read_only": 1
-  },
-  {
-   "fieldname": "invoice_date",
-   "fieldtype": "Date",
-   "label": "Invoice Date",
-   "read_only": 1
-  },
-  {
-   "fieldname": "due_date",
-   "fieldtype": "Date",
-   "label": "Due Date",
-   "read_only": 1
-  },
-  {
-   "fieldname": "iban",
-   "fieldtype": "Data",
-   "label": "IBAN",
-   "read_only": 1
-  },
-  {
-   "fieldname": "qr_reference",
-   "fieldtype": "Data",
-   "label": "QR Reference",
-   "read_only": 1
-  },
-  {
-   "fieldname": "extraction_column",
-   "fieldtype": "Column Break"
-  },
-  {
-   "fieldname": "currency",
-   "fieldtype": "Link",
-   "label": "Currency",
-   "options": "Currency",
-   "read_only": 1
-  },
-  {
-   "fieldname": "net_amount",
-   "fieldtype": "Currency",
-   "label": "Net Amount",
-   "options": "currency",
-   "read_only": 1
-  },
-  {
-   "fieldname": "amount",
-   "fieldtype": "Currency",
-   "label": "Amount",
-   "options": "currency",
-   "read_only": 1,
-   "in_list_view": 1
-  },
-  {
-   "fieldname": "vat_amount",
-   "fieldtype": "Currency",
-   "label": "VAT Amount",
-   "options": "currency",
-   "read_only": 1
-  },
-  {
-   "description": "The extractor's estimate, lowered for every consistency check the result fails (see Extraction Raw). Gates nothing.",
-   "fieldname": "extraction_confidence",
-   "fieldtype": "Float",
-   "label": "Extraction Confidence",
-   "precision": "2",
-   "read_only": 1
-  },
-  {
-   "fieldname": "extraction_raw",
-   "fieldtype": "Code",
-   "label": "Extraction Raw",
-   "options": "JSON",
-   "read_only": 1
-  },
-  {
-   "collapsible": 1,
-   "depends_on": "eval:doc.booking_suggestion",
-   "fieldname": "booking_section",
-   "fieldtype": "Section Break",
-   "label": "Booking Suggestion",
-   "description": "What Create Purchase Invoice will put on the draft. Every line names its source."
-  },
-  {
-   "fieldname": "booking_source",
-   "fieldtype": "Select",
-   "in_standard_filter": 1,
-   "label": "Booking Source",
-   "options": "\nRule\nHistory\nLLM\nDefault\nNone",
-   "read_only": 1,
-   "description": "The weakest source across the lines."
-  },
-  {
-   "fieldname": "booking_column",
-   "fieldtype": "Column Break"
-  },
-  {
-   "fieldname": "booking_confidence",
-   "fieldtype": "Float",
-   "label": "Booking Confidence",
-   "precision": "2",
-   "read_only": 1
-  },
-  {
-   "fieldname": "booking_suggestion_section",
-   "fieldtype": "Section Break",
-   "collapsible": 1,
-   "depends_on": "eval:doc.booking_suggestion"
-  },
-  {
-   "fieldname": "booking_suggestion",
-   "fieldtype": "Code",
-   "label": "Booking Suggestion",
-   "options": "JSON",
-   "read_only": 1
-  },
-  {
-   "fieldname": "accounting_section",
-   "fieldtype": "Section Break",
-   "label": "Accounting"
-  },
-  {
-   "description": "Set by hand or matched on import. The sync never overwrites it.",
+   "description": "Matched automatically, or chosen here when the letter is Waiting for Supplier. Setting it continues processing.",
    "fieldname": "supplier",
    "fieldtype": "Link",
    "label": "Supplier",
    "options": "Supplier"
   },
   {
-   "fieldname": "accounting_column",
+   "fieldname": "processing_note",
+   "fieldtype": "Small Text",
+   "label": "Note",
+   "read_only": 1,
+   "description": "Why the letter stopped where it is."
+  },
+  {
+   "fieldname": "processing_column",
    "fieldtype": "Column Break"
   },
   {
@@ -346,6 +177,14 @@
    "label": "Purchase Invoice",
    "options": "Purchase Invoice",
    "read_only": 1
+  },
+  {
+   "fieldname": "extraction_log",
+   "fieldtype": "Link",
+   "label": "Extraction Log",
+   "options": "ePost Extraction Log",
+   "read_only": 1,
+   "depends_on": "eval:frappe.user.has_role('System Manager')"
   },
   {
    "collapsible": 1,
@@ -370,7 +209,7 @@
  ],
  "index_web_pages_for_search": 0,
  "links": [],
- "modified": "2026-09-30 09:00:00.000000",
+ "modified": "2026-09-30 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "ePost Connector",
  "name": "ePost Letter",

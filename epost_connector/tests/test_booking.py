@@ -20,6 +20,7 @@ from epost_connector.booking.suggest import (
 	BEFORE_HISTORY,
 	BookingContext,
 	VatGroup,
+	route,
 	suggest,
 )
 from epost_connector.tests.booking_fixtures import (
@@ -62,7 +63,7 @@ class BookingTestCase(ePostSiteTestCase):
 
 	def rule(self, **values) -> str:
 		doc = frappe.get_doc(
-			{"doctype": "ePost Booking Rule", "title": "test rule", "company": self.company, **values}
+			{"doctype": "ePost Rule", "title": "test rule", "company": self.company, **values}
 		)
 		doc.insert(ignore_permissions=True)
 		frappe.db.commit()
@@ -363,26 +364,31 @@ class BacktestTest(BookingTestCase):
 		self.assertEqual(result["by_source"]["None"]["lines"], 1, "the first invoice had no history")
 
 
-class LetterSuggestionTest(BookingTestCase):
-	def test_a_letter_that_stops_being_bookable_loses_its_old_suggestion(self):
-		from epost_connector.booking.letter import suggest_for_letter
-		from epost_connector.epost.sync import sync_letters
+class RoutingTest(BookingTestCase):
+	def test_a_status_rule_stops_the_letter_for_its_document_kind(self):
+		rule = self.rule(apply_when=BEFORE_HISTORY, document_kind="Reminder", set_status="Not Bookable")
 
-		self.state.content_override.clear()
-		sync_letters()
-		letter = self.letter_doc("inbox-1")
-		letter.update(
-			{
-				"amount": 10,
-				"document_kind": "Contract",
-				"booking_suggestion": '{"lines": [{"net": 10}]}',
-				"booking_source": "History",
-			}
-		)
+		decided = route(self.context(document_kind="Reminder"))
 
-		self.assertIsNone(suggest_for_letter(letter))
-		self.assertIsNone(letter.booking_suggestion)
-		self.assertIsNone(letter.booking_source)
+		self.assertEqual((decided.status, decided.rule), ("Not Bookable", rule))
+		self.assertIsNone(route(self.context(document_kind="Invoice")).status)
+
+	def test_a_supplier_rule_names_the_supplier_from_a_keyword(self):
+		supplier = ensure_supplier(KNOWN)
+		self.rule(apply_when=BEFORE_HISTORY, keyword="corn[eè]r.?card", set_supplier=supplier)
+
+		decided = route(self.context(vendor_name="Cornèr Banca SA (Cornercard)"))
+
+		self.assertEqual(decided.supplier, supplier)
+		self.assertIsNone(decided.status)
+
+	def test_booking_rules_do_not_route(self):
+		self.rule(apply_when=BEFORE_HISTORY, expense_account=self.acct_a)
+
+		decided = route(self.context())
+
+		self.assertIsNone(decided.status)
+		self.assertIsNone(decided.supplier)
 
 
 class AnalyzeAllTest(ePostSiteTestCase):

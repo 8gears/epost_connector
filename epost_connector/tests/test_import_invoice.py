@@ -13,12 +13,10 @@ import datetime
 
 import frappe
 
-from epost_connector.epost.import_invoice import (
-	create_purchase_invoice,
-	find_supplier,
-	suggest_supplier,
-)
+from epost_connector.epost.import_invoice import create_purchase_invoice
 from epost_connector.epost.sync import sync_letters
+from epost_connector.inbox import matching
+from epost_connector.inbox.process import supplier_hints
 from epost_connector.tests.site_base import (
 	TEST_CURRENCY,
 	cost_center,
@@ -31,6 +29,9 @@ from epost_connector.tests.site_base import (
 )
 
 SUPPLIER = "Muster Elektro AG"
+
+#: Fields `letter_with` sets on the letter rather than in its extraction log.
+LETTER_FIELDS = ("sender_name", "supplier", "status", "purchase_invoice")
 
 #: The year the dated fixtures below post in, alongside today's.
 FIXTURE_YEAR = 2024
@@ -54,12 +55,30 @@ class ImportTestCase(ePostSiteTestCase):
 		sync_letters()
 
 	def letter_with(self, **values):
-		"""A synced letter carrying the extraction fields a human would see."""
+		"""A synced letter whose extraction read `values`.
+
+		Letter fields (sender, supplier, status, invoice link) go onto the letter;
+		everything else is what an extractor read, and goes into a fresh
+		Extraction Log linked to it, as the pipeline would write it.
+		"""
 		doc = self.letter_doc("inbox-1")
-		doc.update(values)
+		letter_fields = {k: values.pop(k) for k in list(values) if k in LETTER_FIELDS}
+		if "amount" in values:
+			values["gross_amount"] = values.pop("amount")
+		log = frappe.get_doc(
+			{"doctype": "ePost Extraction Log", "letter": doc.name, "kind": "Extraction", **values}
+		)
+		log.flags.ignore_links = True
+		log.insert(ignore_permissions=True)
+		doc.update({"extraction_log": log.name, **letter_fields})
 		doc.save(ignore_permissions=True)
 		frappe.db.commit()
 		return doc
+
+	def matched(self, letter):
+		"""What the pipeline's matcher finds for `letter`, without the model."""
+		log = frappe.get_doc("ePost Extraction Log", letter.extraction_log)
+		return matching.find(letter, log).supplier
 
 
 class DraftInvoiceTest(ImportTestCase):
@@ -84,14 +103,14 @@ class DraftInvoiceTest(ImportTestCase):
 		)
 		self.assertEqual(entries, [])
 
-	def test_the_letter_is_linked_back_and_marked_imported(self):
+	def test_the_letter_is_linked_back_and_marked_drafted(self):
 		self.letter_with(vendor_name=SUPPLIER, amount=108.10)
 
 		result = create_purchase_invoice(self.letter_doc("inbox-1").name)
 
 		doc = self.letter_doc("inbox-1")
 		self.assertEqual(doc.purchase_invoice, result["purchase_invoice"])
-		self.assertEqual(doc.status, "Imported")
+		self.assertEqual(doc.status, "Drafted")
 		self.assertEqual(doc.supplier, self.supplier)
 
 	def test_the_letter_pdf_is_attached_to_the_invoice(self):
@@ -223,47 +242,25 @@ class InvoiceLineTest(ImportTestCase):
 				frappe.delete_doc("Purchase Invoice", invoice.name, force=True, ignore_permissions=True)
 				self.letter_with(purchase_invoice=None, status="Downloaded")
 
-	def test_a_suggestion_made_for_another_supplier_is_not_applied(self):
-		"""Changing the supplier in the dialog must not carry the old supplier's booking."""
-		stale_account = next(
-			a
-			for a in frappe.get_all(
-				"Account",
-				filters={"company": self.company, "root_type": "Expense", "is_group": 0},
-				pluck="name",
-			)
-			if a != expense_account(self.company)
-		)
-		self.letter_with(
-			vendor_name=SUPPLIER,
-			amount=100.0,
-			booking_suggestion=frappe.as_json(
-				{"supplier": "Someone Else", "lines": [{"net": 100.0, "expense_account": stale_account}]}
-			),
-		)
-
-		result = create_purchase_invoice(self.letter_doc("inbox-1").name, supplier=self.supplier)
-
-		line = frappe.get_doc("Purchase Invoice", result["purchase_invoice"]).items[0]
-		self.assertNotEqual(line.expense_account, stale_account)
-
 	def test_a_line_without_a_vat_template_is_noted_instead_of_dropped_silently(self):
-		self.letter_with(
-			vendor_name=SUPPLIER,
-			amount=100.0,
-			booking_suggestion=frappe.as_json(
-				{
-					"supplier": self.supplier,
-					"lines": [{"net": 100.0, "expense_account": expense_account(self.company)}],
-				}
-			),
-		)
+		"""A supplier with no history and no rules gets no VAT template; the draft says so."""
+		self.letter_with(vendor_name=SUPPLIER, amount=100.0)
 
 		result = create_purchase_invoice(self.letter_doc("inbox-1").name, supplier=self.supplier)
 
 		self.assertIn(
-			"VAT not applied", frappe.get_doc("Purchase Invoice", result["purchase_invoice"]).remarks
+			"VAT not applied", frappe.get_doc("Purchase Invoice", result["purchase_invoice"]).review_notes
 		)
+
+	def test_the_draft_carries_the_letter_link_and_the_extraction_confidence(self):
+		self.letter_with(vendor_name=SUPPLIER, amount=10.0, confidence=0.8)
+
+		result = create_purchase_invoice(self.letter_doc("inbox-1").name)
+
+		invoice = frappe.get_doc("Purchase Invoice", result["purchase_invoice"])
+		self.assertEqual(invoice.epost_letter, self.letter_doc("inbox-1").name)
+		self.assertEqual(invoice.extraction_confidence, 80)
+		self.assertEqual(invoice.items[0].booking_source, "None")
 
 	def test_a_site_that_names_invoices_by_prompt_still_gets_a_draft(self):
 		"""Migrated sites set autoname to prompt to keep their old invoice numbers."""
@@ -299,7 +296,7 @@ class CurrencyTest(ImportTestCase):
 		invoice = frappe.get_doc("Purchase Invoice", result["purchase_invoice"])
 		self.assertEqual(invoice.currency, TEST_CURRENCY)
 		self.assertEqual(invoice.conversion_rate, 1)
-		self.assertIn("EUR", invoice.remarks)
+		self.assertIn("EUR", invoice.review_notes)
 
 	def test_the_site_default_currency_never_reaches_the_invoice(self):
 		"""`new_doc` fills `currency` from the site defaults, not the company's.
@@ -329,9 +326,9 @@ class RefusalTest(ImportTestCase):
 		with self.assertRaises(frappe.exceptions.ValidationError) as caught:
 			create_purchase_invoice(self.letter_doc("inbox-1").name)
 
-		self.assertIn("No Supplier matches", str(caught.exception))
+		self.assertIn("Map or create", str(caught.exception))
 		self.assertEqual(frappe.db.count("Purchase Invoice"), 0)
-		self.assertNotEqual(self.letter_doc("inbox-1").status, "Imported")
+		self.assertNotEqual(self.letter_doc("inbox-1").status, "Drafted")
 
 	def test_a_supplier_passed_in_by_hand_overrides_the_matcher(self):
 		other = ensure_supplier("Some Other Supplier")
@@ -368,19 +365,19 @@ class RefusalTest(ImportTestCase):
 class SupplierMatchingTest(ImportTestCase):
 	def test_an_exact_name_matches(self):
 		letter = self.letter_with(vendor_name=SUPPLIER)
-		self.assertEqual(find_supplier(letter), self.supplier)
+		self.assertEqual(self.matched(letter), self.supplier)
 
 	def test_a_legal_form_suffix_does_not_prevent_a_match(self):
 		letter = self.letter_with(vendor_name="Muster Elektro")
-		self.assertEqual(find_supplier(letter), self.supplier)
+		self.assertEqual(self.matched(letter), self.supplier)
 
 	def test_case_and_punctuation_do_not_prevent_a_match(self):
 		letter = self.letter_with(vendor_name="muster-elektro, ag.")
-		self.assertEqual(find_supplier(letter), self.supplier)
+		self.assertEqual(self.matched(letter), self.supplier)
 
 	def test_the_sender_is_used_when_no_vendor_was_extracted(self):
 		letter = self.letter_with(vendor_name=None, sender_name=SUPPLIER)
-		self.assertEqual(find_supplier(letter), self.supplier)
+		self.assertEqual(self.matched(letter), self.supplier)
 
 	def test_an_ambiguous_name_returns_nothing_rather_than_a_guess(self):
 		"""Two plausible suppliers is a question for a human, not a coin toss.
@@ -393,37 +390,41 @@ class SupplierMatchingTest(ImportTestCase):
 		ensure_supplier("Nordwand Bau West AG")
 		letter = self.letter_with(vendor_name="Nordwand Bau", sender_name=None)
 
-		self.assertIsNone(find_supplier(letter))
+		self.assertIsNone(self.matched(letter))
 
 	def test_one_substring_match_is_still_taken(self):
 		"""The guard is ambiguity, not the substring pass itself."""
 		ensure_supplier("Sudwand Bau Ost AG")
 		letter = self.letter_with(vendor_name="Sudwand Bau", sender_name=None)
 
-		self.assertEqual(find_supplier(letter), "Sudwand Bau Ost AG")
+		self.assertEqual(self.matched(letter), "Sudwand Bau Ost AG")
 
 	def test_a_letter_with_nothing_to_match_on_returns_nothing(self):
 		letter = self.letter_with(vendor_name=None, sender_name=None)
-		self.assertIsNone(find_supplier(letter))
+		self.assertIsNone(self.matched(letter))
 
 	def test_a_very_short_name_is_not_substring_matched(self):
 		"""`in` on a two-letter string would match half the supplier list."""
 		ensure_supplier("Alpha Beta Gamma AG")
 		letter = self.letter_with(vendor_name="ab", sender_name=None)
 
-		self.assertIsNone(find_supplier(letter))
+		self.assertIsNone(self.matched(letter))
 
-	def test_the_dialog_is_offered_the_same_answer_the_import_would_take(self):
-		self.letter_with(vendor_name=SUPPLIER)
-		name = self.letter_doc("inbox-1").name
+	def test_the_map_dialog_offers_the_closest_suppliers(self):
+		self.letter_with(vendor_name="Muster Elektro Gruppe")
 
-		self.assertEqual(suggest_supplier(name)["supplier"], self.supplier)
+		hints = supplier_hints(self.letter_doc("inbox-1").name)
+
+		self.assertEqual(hints["vendor_name"], "Muster Elektro Gruppe")
+		self.assertIn(self.supplier, [c["supplier"] for c in hints["candidates"]])
 
 	def test_a_supplier_set_on_the_letter_wins_over_the_matcher(self):
 		other = ensure_supplier("Chosen By Hand AG")
-		letter = self.letter_with(vendor_name=SUPPLIER, supplier=other)
+		self.letter_with(vendor_name=SUPPLIER, supplier=other, amount=10.0)
 
-		self.assertEqual(suggest_supplier(letter.name)["supplier"], other)
+		result = create_purchase_invoice(self.letter_doc("inbox-1").name)
+
+		self.assertEqual(result["supplier"], other)
 
 
 class PermissionTest(ImportTestCase):

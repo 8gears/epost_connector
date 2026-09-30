@@ -1,18 +1,22 @@
 const STATUS_COLORS = {
 	New: "orange",
 	Downloaded: "blue",
-	Analyzed: "purple",
-	Imported: "green",
+	"Waiting for Supplier": "orange",
+	Drafted: "green",
+	"Not Bookable": "gray",
+	Duplicate: "gray",
 	Ignored: "gray",
 };
 
 // The views a bookkeeper actually works from, offered under a Quick Filters
-// button. "To Import" is the queue; "Sync Errors" is what needs a human.
+// button. "Waiting for Supplier" is the only queue that needs a human here; the
+// drafts themselves are reviewed in the Purchase Invoice list.
 const QUICK_FILTERS = {
-	"New Letters": [["status", "=", "New"]],
-	"To Import": [["status", "in", ["Downloaded", "Analyzed"]]],
+	"Waiting for Supplier": [["status", "=", "Waiting for Supplier"]],
+	"Not Processed": [["status", "in", ["New", "Downloaded"]]],
+	Drafted: [["status", "=", "Drafted"]],
+	"Not Bookable": [["status", "in", ["Not Bookable", "Duplicate"]]],
 	"Sync Errors": [["sync_error", "is", "set"]],
-	Imported: [["status", "=", "Imported"]],
 };
 
 frappe.listview_settings["ePost Letter"] = {
@@ -48,7 +52,7 @@ frappe.listview_settings["ePost Letter"] = {
 		// shown a button that can only answer with a permission error.
 		if (can_sync()) {
 			listview.page.add_inner_button(__("Sync Now"), () => sync_now(listview));
-			listview.page.add_inner_button(__("Analyze All"), () => analyze_all(listview));
+			listview.page.add_inner_button(__("Process All"), () => analyze_all(listview));
 		}
 		listview.page.add_inner_button(__("Sync Log"), () =>
 			frappe.set_route("List", "ePost Sync Log")
@@ -105,15 +109,15 @@ function bulk_ignore(listview) {
 
 function analyze_all(listview) {
 	frappe.confirm(
-		__("Send every downloaded, unanalysed letter to the configured extractor? With a hosted model this costs one model call per letter."),
+		__("Process every downloaded letter: read it with the configured model, match the supplier and create draft invoices. With a hosted model this costs one to three model calls per letter."),
 		() =>
 			frappe.call({
 				method: "epost_connector.extraction.pipeline.analyze_all",
 				callback: ({ message }) => {
 					frappe.show_alert({
 						message: message && message.already_running
-							? __("An analysis run is already queued.")
-							: __("Analysis queued. Letters move to Analyzed as they are read."),
+							? __("A processing run is already queued.")
+							: __("Processing queued. Letters move on as they are read."),
 						indicator: "blue",
 					});
 					listview.refresh();

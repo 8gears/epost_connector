@@ -1,0 +1,259 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "creation": "2026-09-30 00:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 0,
+ "engine": "InnoDB",
+ "field_order": [
+  "letter",
+  "kind",
+  "status",
+  "column_break_run",
+  "model",
+  "input_type",
+  "prompt_tokens",
+  "completion_tokens",
+  "values_section",
+  "document_kind",
+  "vendor_name",
+  "vendor_tax_id",
+  "vendor_country",
+  "vendor_address",
+  "iban",
+  "qr_reference",
+  "column_break_values",
+  "invoice_number",
+  "invoice_date",
+  "due_date",
+  "service_period_from",
+  "service_period_to",
+  "currency",
+  "net_amount",
+  "vat_amount",
+  "gross_amount",
+  "confidence",
+  "raw_section",
+  "answer",
+  "error"
+ ],
+ "fields": [
+  {
+   "fieldname": "letter",
+   "fieldtype": "Link",
+   "options": "ePost Letter",
+   "label": "Letter",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "kind",
+   "fieldtype": "Select",
+   "options": "Extraction\nSupplier\nBooking",
+   "label": "Kind",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "options": "Success\nEmpty\nFailed",
+   "label": "Status",
+   "in_list_view": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_run",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "model",
+   "fieldtype": "Data",
+   "label": "Model",
+   "read_only": 1
+  },
+  {
+   "fieldname": "input_type",
+   "fieldtype": "Select",
+   "options": "\ntext\npdf",
+   "label": "Input",
+   "read_only": 1
+  },
+  {
+   "fieldname": "prompt_tokens",
+   "fieldtype": "Int",
+   "label": "Prompt Tokens",
+   "read_only": 1
+  },
+  {
+   "fieldname": "completion_tokens",
+   "fieldtype": "Int",
+   "label": "Completion Tokens",
+   "read_only": 1
+  },
+  {
+   "fieldname": "values_section",
+   "fieldtype": "Section Break",
+   "label": "Extracted Values",
+   "depends_on": "eval:doc.kind=='Extraction'"
+  },
+  {
+   "fieldname": "document_kind",
+   "fieldtype": "Data",
+   "label": "Document Kind",
+   "read_only": 1
+  },
+  {
+   "fieldname": "vendor_name",
+   "fieldtype": "Data",
+   "label": "Vendor Name",
+   "read_only": 1
+  },
+  {
+   "fieldname": "vendor_tax_id",
+   "fieldtype": "Data",
+   "label": "Vendor Tax ID",
+   "read_only": 1
+  },
+  {
+   "fieldname": "vendor_country",
+   "fieldtype": "Link",
+   "label": "Vendor Country",
+   "read_only": 1,
+   "options": "Country"
+  },
+  {
+   "fieldname": "vendor_address",
+   "fieldtype": "Small Text",
+   "label": "Vendor Address",
+   "read_only": 1
+  },
+  {
+   "fieldname": "iban",
+   "fieldtype": "Data",
+   "label": "IBAN",
+   "read_only": 1
+  },
+  {
+   "fieldname": "qr_reference",
+   "fieldtype": "Data",
+   "label": "QR Reference",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_values",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "invoice_number",
+   "fieldtype": "Data",
+   "label": "Invoice Number",
+   "read_only": 1
+  },
+  {
+   "fieldname": "invoice_date",
+   "fieldtype": "Date",
+   "label": "Invoice Date",
+   "read_only": 1
+  },
+  {
+   "fieldname": "due_date",
+   "fieldtype": "Date",
+   "label": "Due Date",
+   "read_only": 1
+  },
+  {
+   "fieldname": "service_period_from",
+   "fieldtype": "Date",
+   "label": "Service Period From",
+   "read_only": 1
+  },
+  {
+   "fieldname": "service_period_to",
+   "fieldtype": "Date",
+   "label": "Service Period To",
+   "read_only": 1
+  },
+  {
+   "fieldname": "currency",
+   "fieldtype": "Link",
+   "label": "Currency",
+   "read_only": 1,
+   "options": "Currency"
+  },
+  {
+   "fieldname": "net_amount",
+   "fieldtype": "Float",
+   "label": "Net Amount",
+   "read_only": 1
+  },
+  {
+   "fieldname": "vat_amount",
+   "fieldtype": "Float",
+   "label": "VAT Amount",
+   "read_only": 1
+  },
+  {
+   "fieldname": "gross_amount",
+   "fieldtype": "Float",
+   "label": "Gross Amount",
+   "read_only": 1
+  },
+  {
+   "fieldname": "confidence",
+   "fieldtype": "Float",
+   "label": "Confidence",
+   "read_only": 1
+  },
+  {
+   "fieldname": "raw_section",
+   "fieldtype": "Section Break",
+   "label": "Raw",
+   "collapsible": 1
+  },
+  {
+   "fieldname": "answer",
+   "fieldtype": "Code",
+   "options": "JSON",
+   "label": "Answer",
+   "read_only": 1,
+   "description": "The model's answer, the consistency checks and, for a supplier search, the candidates offered to the reviewer."
+  },
+  {
+   "fieldname": "error",
+   "fieldtype": "Small Text",
+   "label": "Error",
+   "read_only": 1
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "links": [],
+ "modified": "2026-09-30 12:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "ePost Connector",
+ "name": "ePost Extraction Log",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 0,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 0
+  }
+ ],
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 0,
+ "autoname": "format:EPOST-XLOG-{#####}",
+ "in_create": 1,
+ "title_field": "letter"
+}

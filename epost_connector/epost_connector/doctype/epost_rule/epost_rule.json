@@ -17,6 +17,7 @@
   "supplier",
   "vendor_tax_id",
   "keyword",
+  "document_kind",
   "column_break_match",
   "vendor_country",
   "foreign_only",
@@ -24,6 +25,9 @@
   "vat_on_invoice",
   "account_prefix",
   "target_section",
+  "set_status",
+  "set_supplier",
+  "column_break_route",
   "expense_account",
   "item_tax_template",
   "column_break_target",
@@ -66,7 +70,7 @@
    "reqd": 1,
    "in_list_view": 1,
    "in_standard_filter": 1,
-   "description": "Before history: an explicit decision that wins over how the supplier was booked before. After history: a default for suppliers with no clear history."
+   "description": "Before history: a decision that wins over how the supplier was booked before. After history: a default for what history left open. Routing (status, supplier) is evaluated before either."
   },
   {
    "fieldname": "company",
@@ -100,6 +104,12 @@
    "fieldtype": "Data",
    "label": "Keyword (regex)",
    "description": "Searched case-insensitively in the vendor name, the line description and the letter text."
+  },
+  {
+   "fieldname": "document_kind",
+   "fieldtype": "Select",
+   "label": "Document Kind",
+   "options": "\nInvoice\nCredit Note\nReminder\nReceipt\nContract\nTax Assessment\nCorrespondence\nOther"
   },
   {
    "fieldname": "column_break_match",
@@ -138,7 +148,24 @@
   {
    "fieldname": "target_section",
    "fieldtype": "Section Break",
-   "label": "Book To"
+   "label": "Then"
+  },
+  {
+   "fieldname": "set_status",
+   "fieldtype": "Select",
+   "label": "Set Status",
+   "options": "\nNot Bookable",
+   "description": "Stop here: the letter is not turned into an invoice."
+  },
+  {
+   "fieldname": "set_supplier",
+   "fieldtype": "Link",
+   "label": "Set Supplier",
+   "options": "Supplier"
+  },
+  {
+   "fieldname": "column_break_route",
+   "fieldtype": "Column Break"
   },
   {
    "fieldname": "expense_account",
@@ -170,10 +197,10 @@
  ],
  "index_web_pages_for_search": 0,
  "links": [],
- "modified": "2026-09-30 09:00:00.000000",
+ "modified": "2026-09-30 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "ePost Connector",
- "name": "ePost Booking Rule",
+ "name": "ePost Rule",
  "owner": "Administrator",
  "permissions": [
   {

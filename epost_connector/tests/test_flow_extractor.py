@@ -126,7 +126,7 @@ class FlowPipelineTest(ePostSiteTestCase):
 		self.state.content_override.clear()
 		self.configure_settings(extractor="Flow", flow_model="Test Model")
 
-	def test_a_correspondence_letter_is_classified_and_its_extraction_section_stays_empty(self):
+	def test_a_correspondence_letter_is_not_bookable_and_the_sync_still_succeeds(self):
 		answer = {"document_kind": "Correspondence", "summary": "A newsletter.", "confidence": 0.8}
 		with (
 			patch.object(flow, "_pdf_text", return_value=TEXT),
@@ -135,20 +135,21 @@ class FlowPipelineTest(ePostSiteTestCase):
 			sync_letters()
 
 		doc = self.letter_doc("inbox-1")
-		self.assertEqual(doc.document_kind, "Correspondence")
-		self.assertFalse(doc.vendor_name or doc.invoice_number or doc.amount)
-		self.assertFalse(doc.booking_suggestion, "correspondence is not booked")
+		self.assertEqual(doc.status, "Not Bookable")
+		self.assertFalse(doc.purchase_invoice)
+		log = frappe.get_doc("ePost Extraction Log", doc.extraction_log)
+		self.assertEqual(log.document_kind, "Correspondence")
 		self.assertEqual(frappe.get_last_doc("ePost Sync Log").status, "Success")
 
-	def test_the_new_fields_land_on_the_letter(self):
+	def test_the_extracted_values_land_in_the_log(self):
 		with (
 			patch.object(flow, "_pdf_text", return_value=TEXT),
 			patch.object(flow, "ask_json", return_value=(dict(ANSWER), None)),
 		):
 			sync_letters()
 
-		doc = self.letter_doc("inbox-1")
-		self.assertEqual(doc.status, "Analyzed")
-		self.assertEqual(doc.vendor_tax_id, "CHE-123.456.789 MWST")
-		self.assertEqual(doc.net_amount, 100.0)
-		self.assertEqual(doc.amount, 108.1)
+		log = frappe.get_doc("ePost Extraction Log", self.letter_doc("inbox-1").extraction_log)
+		self.assertEqual(log.vendor_tax_id, "CHE-123.456.789 MWST")
+		self.assertEqual(log.net_amount, 100.0)
+		self.assertEqual(log.gross_amount, 108.1)
+		self.assertEqual(log.document_kind, "Invoice")

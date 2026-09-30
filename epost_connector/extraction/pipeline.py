@@ -1,7 +1,13 @@
-"""The extract stage: run the configured extractor and persist what it found."""
+"""The extract stage: run the configured extractor and keep what it found.
+
+The result goes to an `ePost Extraction Log`, never onto the letter. The letter
+stays what ePost delivered; the log is where the extracted values wait until a
+supplier is known, and what the invoice builder reads.
+"""
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import frappe
@@ -12,43 +18,37 @@ from epost_connector.extraction.base import ExtractionResult
 from epost_connector.extraction.noop import NoopExtractor
 from epost_connector.extraction.registry import get_extractor
 
+LOG_DOCTYPE = "ePost Extraction Log"
 
-def analyze_letter(letter: Any, force: bool = False) -> bool:
-	"""Extract from `letter`'s PDF and write the result onto the doc.
 
-	Returns True when an extractor produced a result. Runs only on letters that
-	have a downloaded PDF and have not been analysed yet, unless `force`.
+def extract_letter(letter: Any, force: bool = False):
+	"""The letter's extraction log, extracting first when there is none or `force`.
+
+	Returns None when no extractor is configured, the letter has no PDF, or the
+	extractor read nothing. The caller links the log and saves the letter.
 	"""
 	if not letter.file:
-		return False
-	if not force and letter.status != "Downloaded":
-		return False
+		return None
+	if letter.extraction_log and not force and frappe.db.exists(LOG_DOCTYPE, letter.extraction_log):
+		return frappe.get_doc(LOG_DOCTYPE, letter.extraction_log)
 
 	extractor = get_extractor(frappe.db.get_single_value("ePost Settings", "extractor"))
 	if isinstance(extractor, NoopExtractor):
 		# Short-circuit before touching the disk: the default configuration runs
 		# on every letter of every hourly sync.
-		return False
+		return None
 
 	result = extractor.extract(letter, _read_pdf(letter))
 	if result is None:
-		return False
+		return None
 
-	_apply(letter, result)
-	letter.status = "Analyzed"
-	_suggest_booking(letter)
-	letter.save(ignore_permissions=True)
-	return True
-
-
-@frappe.whitelist()
-def analyze(letter_name: str) -> dict:
-	"""Desk button: re-run extraction on one letter."""
-	letter = frappe.get_doc("ePost Letter", letter_name)
-	letter.check_permission("write")
-
-	extracted = analyze_letter(letter, force=True)
-	return {"extracted": extracted, "status": letter.status}
+	log = frappe.new_doc(LOG_DOCTYPE)
+	log.letter = letter.name
+	log.kind = "Extraction"
+	log.status = "Success"
+	_apply(log, result)
+	log.insert(ignore_permissions=True)
+	return log
 
 
 #: One id for every backfill, so a second press is recognised as the same work.
@@ -73,7 +73,7 @@ def analyze_all(limit: int | None = None) -> dict:
 		return {"job_id": ANALYZE_JOB_ID, "already_running": True}
 
 	frappe.enqueue(
-		"epost_connector.extraction.pipeline.analyze_downloaded",
+		"epost_connector.inbox.process.process_downloaded",
 		queue="long",
 		timeout=7200,
 		job_id=ANALYZE_JOB_ID,
@@ -83,71 +83,54 @@ def analyze_all(limit: int | None = None) -> dict:
 	return {"job_id": ANALYZE_JOB_ID, "already_running": False}
 
 
-def analyze_downloaded(limit: int | None = None) -> dict:
-	"""Analyse `Downloaded` letters newest first, committing after each one."""
-	names = frappe.get_all(
-		"ePost Letter",
-		filters={"status": "Downloaded", "file": ("is", "set")},
-		pluck="name",
-		order_by="received_at desc",
-		limit=limit or 0,
+def _apply(log: Any, result: ExtractionResult) -> None:
+	raw = result.raw or {}
+	usage = raw.get("usage") or {}
+	log.model = raw.get("model")
+	log.input_type = raw.get("input")
+	log.prompt_tokens = cint(usage.get("prompt_tokens"))
+	log.completion_tokens = cint(usage.get("completion_tokens"))
+	log.answer = json.dumps(
+		{
+			"answer": raw.get("answer"),
+			"checks": raw.get("checks"),
+			"vat_breakdown": result.vat_breakdown,
+			"line_items": result.line_items,
+			"summary": result.summary,
+		},
+		indent=1,
+		default=str,
 	)
-	counts = {"letters": len(names), "analyzed": 0, "empty": 0, "failed": 0}
-	for name in names:
-		savepoint = f"epost_{frappe.generate_hash(length=8)}"
-		frappe.db.savepoint(savepoint)
-		try:
-			extracted = analyze_letter(frappe.get_doc("ePost Letter", name))
-			frappe.db.commit()
-			counts["analyzed" if extracted else "empty"] += 1
-		except Exception:
-			frappe.db.rollback(save_point=savepoint)
-			frappe.log_error("ePost: analysis failed", reference_doctype="ePost Letter", reference_name=name)
-			counts["failed"] += 1
-	return counts
 
-
-def _apply(letter: Any, result: ExtractionResult) -> None:
-	letter.vendor_name = result.vendor_name
-	letter.invoice_number = result.invoice_number
-	letter.invoice_date = _as_date(result.invoice_date)
-	letter.due_date = _as_date(result.due_date)
-	letter.amount = flt(result.gross_amount if result.gross_amount is not None else result.net_amount)
-	letter.vat_amount = flt(result.vat_amount)
-	letter.extraction_confidence = flt(result.confidence)
-	letter.extraction_raw = frappe.as_json(result.raw or {})
-	letter.document_kind = result.document_kind
-	letter.vendor_tax_id = result.vendor_tax_id
-	letter.vendor_country = (
+	log.document_kind = result.document_kind
+	log.vendor_name = result.vendor_name
+	log.vendor_tax_id = result.vendor_tax_id
+	log.vendor_address = result.vendor_address
+	log.iban = result.iban
+	log.qr_reference = result.qr_reference
+	log.invoice_number = result.invoice_number
+	log.invoice_date = _as_date(result.invoice_date)
+	log.due_date = _as_date(result.due_date)
+	log.service_period_from = _as_date(result.service_period_from)
+	log.service_period_to = _as_date(result.service_period_to)
+	log.net_amount = _amount(result.net_amount)
+	log.vat_amount = _amount(result.vat_amount)
+	log.gross_amount = _amount(result.gross_amount)
+	log.confidence = flt(result.confidence)
+	# Links: a value ERPNext has no record for is dropped, or the insert fails
+	# and the rest of the result is lost with it.
+	log.vendor_country = (
 		result.vendor_country
 		if result.vendor_country and frappe.db.exists("Country", result.vendor_country)
 		else None
 	)
-	letter.iban = result.iban
-	letter.qr_reference = result.qr_reference
-	letter.net_amount = flt(result.net_amount) if result.net_amount is not None else None
-
-	# Assigned unconditionally like every other field above, so the letter shows
-	# what this extractor found rather than what a previous run left behind.
-	# `currency` is a Link, so a code ERPNext has no Currency for is dropped:
-	# keeping it would fail the save and lose the rest of the result with it.
-	known = bool(result.currency) and frappe.db.exists("Currency", result.currency)
-	letter.currency = result.currency if known else None
+	log.currency = (
+		result.currency if result.currency and frappe.db.exists("Currency", result.currency) else None
+	)
 
 
-def _suggest_booking(letter: Any) -> None:
-	"""Best effort: a failed suggestion must not cost the extraction it follows.
-
-	The suggestion only reads, so there is nothing to roll back.
-	"""
-	try:
-		from epost_connector.booking.letter import suggest_for_letter
-
-		suggest_for_letter(letter)
-	except Exception:
-		frappe.log_error(
-			"ePost: booking suggestion failed", reference_doctype="ePost Letter", reference_name=letter.name
-		)
+def _amount(value):
+	return None if value is None else flt(value)
 
 
 def _as_date(value: Any):

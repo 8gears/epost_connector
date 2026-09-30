@@ -25,7 +25,6 @@ from epost_connector.epost.sync import (
 	reconcile,
 	sync_letters,
 )
-from epost_connector.extraction import registry
 from epost_connector.tests import mock_epost
 from epost_connector.tests.mock_epost import (
 	BAD_THUMBNAIL_LETTER,
@@ -104,108 +103,16 @@ class SyncCoverageTest(ePostSiteTestCase):
 		self.assertEqual(self.letter_doc("s-participant").sender_name, "participant-1")
 		self.assertEqual(self.letter_doc("s-user").sender_name, "user-1")
 
-	def test_the_list_view_shows_only_columns_that_hold_a_real_value(self):
+	def test_the_list_view_columns(self):
 		"""List columns come only from `in_list_view`; there is no client API.
 
-		`amount` is deliberately not among them, and this is the guard on putting
-		it back. See `test_the_amount_column_would_be_fabricated_today` for why.
+		Only what ePost delivered is listed. Amounts belong to the draft invoice,
+		not to the letter.
 		"""
 		meta = frappe.get_meta("ePost Letter")
 		listed = [f.fieldname for f in meta.fields if f.in_list_view]
 
 		self.assertEqual(listed, ["title", "sender_name", "received_at", "status", "document_types"])
-
-	def test_the_amount_column_would_be_fabricated_today(self):
-		"""Why `amount` is not a list column, and the condition for adding it.
-
-		A Currency column is `NOT NULL DEFAULT 0`, so an unextracted letter holds
-		0 rather than nothing, and a Currency field with no `currency` beside it
-		formats using the *site* default. Shown in a list that is read for
-		bookkeeping, a letter nobody has opened therefore states an amount and a
-		denomination that were never read off it.
-
-		The app ships only the no-op extractor, so that is every row, always.
-		Register a real extractor and this test starts failing — that is the
-		signal to make `amount` a column.
-		"""
-		self.assertEqual(frappe.db.get_single_value("ePost Settings", "extractor"), "None")
-		self.assertEqual(set(registry.EXTRACTORS), {"", "None"})
-
-		self.state.content_override.clear()
-		sync_letters()
-
-		amounts = frappe.get_all("ePost Letter", pluck="amount")
-		self.assertTrue(amounts)
-		self.assertEqual(set(amounts), {0}, "an extractor now fills amount; reconsider the column")
-		self.assertEqual(set(frappe.get_all("ePost Letter", pluck="currency")), {None})
-
-	def test_a_currency_field_cannot_represent_an_amount_nobody_read(self):
-		"""The reason the fix is to hide the field rather than to blank it.
-
-		Both halves of the obvious fix are impossible, and this pins why so the
-		next person does not spend the afternoon rediscovering it: the column is
-		NOT NULL, and Frappe formats a null Currency exactly as it formats zero.
-		"""
-		from frappe.utils.formatters import format_value
-
-		doc = frappe.get_doc(
-			{"doctype": "ePost Letter", "letter_id": "probe-null-amount", "status": "New"}
-		).insert(ignore_permissions=True)
-
-		# The column is `decimal(21,9) NOT NULL DEFAULT 0`, so "no amount" cannot
-		# be stored as anything but zero.
-		with self.assertRaises(Exception):
-			frappe.db.set_value("ePost Letter", doc.name, "amount", None, update_modified=False)
-
-		# And even if it could be, it would render identically to zero anyway.
-		field = frappe.get_meta("ePost Letter").get_field("amount")
-		self.assertEqual(format_value(None, df=field), format_value(0, df=field))
-
-	def test_the_extraction_section_is_hidden_until_it_holds_something(self):
-		"""Otherwise an unread letter shows `0.00` under a site-default symbol.
-
-		Every field in the section is falsy before extraction — the Currency ones
-		read 0, which is falsy in the same way an empty Data field is — so one
-		predicate over all of them hides the section exactly when it is empty.
-		"""
-		section = frappe.get_meta("ePost Letter").get_field("extraction_section")
-		self.assertTrue(section.depends_on)
-
-		self.state.content_override.clear()
-		sync_letters()
-		doc = self.letter_doc("inbox-1")
-
-		for fieldname in (
-			"vendor_name",
-			"invoice_number",
-			"invoice_date",
-			"due_date",
-			"currency",
-			"amount",
-			"vat_amount",
-		):
-			with self.subTest(field=fieldname):
-				self.assertIn(fieldname, section.depends_on)
-				self.assertFalse(doc.get(fieldname), "a truthy value here would show the empty section")
-
-	def test_the_section_reappears_once_an_extractor_has_read_something(self):
-		self.state.content_override.clear()
-
-		with registered_extractor("Fixed", _extractor_returning_amount()):
-			sync_letters()
-
-		doc = self.letter_doc("inbox-1")
-		self.assertEqual(doc.status, "Analyzed")
-		self.assertTrue(doc.amount, "the predicate would still hide a section that now has data")
-		self.assertEqual(doc.currency, "CHF")
-
-	def test_the_amount_reads_its_symbol_from_the_currency_beside_it(self):
-		"""So when a real extractor does fill both, no separate currency column
-		is needed — which is why `currency` is not one either."""
-		meta = frappe.get_meta("ePost Letter")
-
-		self.assertEqual(meta.get_field("amount").options, "currency")
-		self.assertEqual(meta.get_field("vat_amount").options, "currency")
 
 	def test_the_document_type_is_reachable_as_a_filter_as_well_as_a_column(self):
 		""" "Show me the invoices" is the thing this app is read for."""
@@ -216,7 +123,7 @@ class SyncCoverageTest(ePostSiteTestCase):
 
 		With the eArchive sweep removed there is only one value it could ever
 		hold, so as a column it would state the same thing on every row for
-		ever — the objection that keeps `amount` out of the list as well. There
+		ever. There
 		was no data to preserve: `ePost Letter` was empty on both benches.
 		"""
 		self.assertIsNone(frappe.get_meta("ePost Letter").get_field("folder"))
@@ -356,7 +263,7 @@ class StatusTransitionTest(ePostSiteTestCase):
 	def test_the_status_only_ever_moves_forward(self):
 		sync_letters()
 		doc = self.letter_doc("inbox-1")
-		doc.status = "Analyzed"
+		doc.status = "Waiting for Supplier"
 		doc.save(ignore_permissions=True)
 
 		doc.status = "New"
@@ -366,7 +273,7 @@ class StatusTransitionTest(ePostSiteTestCase):
 	def test_ignoring_a_letter_is_allowed_from_any_state(self):
 		sync_letters()
 		doc = self.letter_doc("inbox-1")
-		doc.status = "Analyzed"
+		doc.status = "Waiting for Supplier"
 		doc.save(ignore_permissions=True)
 
 		doc.status = "Ignored"
@@ -377,7 +284,7 @@ class StatusTransitionTest(ePostSiteTestCase):
 	def test_a_letter_whose_invoice_is_gone_can_come_back_into_the_queue(self):
 		sync_letters()
 		doc = self.letter_doc("inbox-1")
-		doc.status = "Imported"
+		doc.status = "Drafted"
 		doc.save(ignore_permissions=True)
 
 		# The Purchase Invoice was deleted, so the link is dangling.
@@ -909,19 +816,6 @@ class DatetimeParsingTest(ePostSiteTestCase):
 		for value in (TRAVERSAL, "", None, "not-a-date", "2021-13-45T99:99:99Z"):
 			with self.subTest(value=value):
 				self.assertIsNone(_parse_datetime(value))
-
-
-def _extractor_returning_amount():
-	"""An extractor that fills the two fields the hidden section turns on."""
-	from epost_connector.extraction.base import ExtractionResult, LetterExtractor
-
-	class Fixed(LetterExtractor):
-		name = "Fixed"
-
-		def extract(self, letter_doc, pdf_bytes):
-			return ExtractionResult(gross_amount=96.64, currency="CHF")
-
-	return Fixed
 
 
 def _error_log_text() -> str:

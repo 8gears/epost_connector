@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from epost_connector.extraction.base import LetterExtractor
+from epost_connector.extraction.flow import FlowExtractor
 from epost_connector.extraction.noop import NoopExtractor
 
 #: Keys must match the `extractor` Select options on `ePost Settings`. The empty
@@ -10,6 +11,7 @@ from epost_connector.extraction.noop import NoopExtractor
 EXTRACTORS: dict[str, type[LetterExtractor]] = {
 	"": NoopExtractor,
 	"None": NoopExtractor,
+	"Flow": FlowExtractor,
 }
 
 

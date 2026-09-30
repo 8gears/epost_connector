@@ -1,0 +1,242 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "format:EPOST-RULE-{#####}",
+ "creation": "2026-09-29 00:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 0,
+ "engine": "InnoDB",
+ "field_order": [
+  "title",
+  "enabled",
+  "column_break_head",
+  "priority",
+  "apply_when",
+  "company",
+  "match_section",
+  "supplier",
+  "vendor_tax_id",
+  "keyword",
+  "document_kind",
+  "column_break_match",
+  "vendor_country",
+  "foreign_only",
+  "domestic_only",
+  "vat_on_invoice",
+  "account_prefix",
+  "target_section",
+  "set_status",
+  "set_supplier",
+  "column_break_route",
+  "expense_account",
+  "item_tax_template",
+  "column_break_target",
+  "cost_center",
+  "notes"
+ ],
+ "fields": [
+  {
+   "fieldname": "title",
+   "fieldtype": "Data",
+   "label": "Title",
+   "reqd": 1,
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "enabled",
+   "fieldtype": "Check",
+   "label": "Enabled",
+   "default": "1",
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "column_break_head",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "priority",
+   "fieldtype": "Int",
+   "label": "Priority",
+   "default": "100",
+   "in_list_view": 1,
+   "description": "Lower runs first. Within one phase each rule only fills what earlier rules and the history left open."
+  },
+  {
+   "fieldname": "apply_when",
+   "fieldtype": "Select",
+   "label": "Apply",
+   "options": "Before history\nAfter history",
+   "default": "Before history",
+   "reqd": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "description": "Before history: a decision that wins over how the supplier was booked before. After history: a default for what history left open. Routing (status, supplier) is evaluated before either."
+  },
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "label": "Company",
+   "options": "Company",
+   "reqd": 1,
+   "description": "Accounts, VAT templates and cost centers belong to one company, so every rule does too."
+  },
+  {
+   "fieldname": "match_section",
+   "fieldtype": "Section Break",
+   "label": "Match",
+   "description": "Every condition that is set must hold. A rule with no condition matches every letter."
+  },
+  {
+   "fieldname": "supplier",
+   "fieldtype": "Link",
+   "label": "Supplier",
+   "options": "Supplier",
+   "in_standard_filter": 1
+  },
+  {
+   "fieldname": "vendor_tax_id",
+   "fieldtype": "Data",
+   "label": "Vendor Tax ID",
+   "description": "Compared without spaces, dots and dashes."
+  },
+  {
+   "fieldname": "keyword",
+   "fieldtype": "Data",
+   "label": "Keyword (regex)",
+   "description": "Searched case-insensitively in the vendor name, the line description and the letter text."
+  },
+  {
+   "fieldname": "document_kind",
+   "fieldtype": "Select",
+   "label": "Document Kind",
+   "options": "\nInvoice\nCredit Note\nReminder\nReceipt\nContract\nTax Assessment\nCorrespondence\nOther"
+  },
+  {
+   "fieldname": "column_break_match",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "vendor_country",
+   "fieldtype": "Link",
+   "label": "Vendor Country",
+   "options": "Country"
+  },
+  {
+   "fieldname": "foreign_only",
+   "fieldtype": "Check",
+   "label": "Foreign Vendor Only",
+   "description": "The vendor country differs from the company country. A vendor without a country does not match."
+  },
+  {
+   "fieldname": "domestic_only",
+   "fieldtype": "Check",
+   "label": "Domestic Vendor Only"
+  },
+  {
+   "fieldname": "vat_on_invoice",
+   "fieldtype": "Select",
+   "label": "VAT on Invoice",
+   "options": "\nCharged\nNot charged",
+   "description": "Whether the invoice line charges VAT. This, not the vendor country, decides between input tax and reverse charge."
+  },
+  {
+   "fieldname": "account_prefix",
+   "fieldtype": "Data",
+   "label": "Account Prefix",
+   "description": "Comma-separated prefixes of the account already chosen, e.g. 4 or 1,5,6,7,8. Only useful After history."
+  },
+  {
+   "fieldname": "target_section",
+   "fieldtype": "Section Break",
+   "label": "Then"
+  },
+  {
+   "fieldname": "set_status",
+   "fieldtype": "Select",
+   "label": "Set Status",
+   "options": "\nNot Bookable",
+   "description": "Stop here: the letter is not turned into an invoice."
+  },
+  {
+   "fieldname": "set_supplier",
+   "fieldtype": "Link",
+   "label": "Set Supplier",
+   "options": "Supplier"
+  },
+  {
+   "fieldname": "column_break_route",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "expense_account",
+   "fieldtype": "Link",
+   "label": "Expense Account",
+   "options": "Account"
+  },
+  {
+   "fieldname": "item_tax_template",
+   "fieldtype": "Link",
+   "label": "Item Tax Template",
+   "options": "Item Tax Template"
+  },
+  {
+   "fieldname": "column_break_target",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "cost_center",
+   "fieldtype": "Link",
+   "label": "Cost Center",
+   "options": "Cost Center"
+  },
+  {
+   "fieldname": "notes",
+   "fieldtype": "Small Text",
+   "label": "Notes"
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "links": [],
+ "modified": "2026-09-30 12:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "ePost Connector",
+ "name": "ePost Rule",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Accounts Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "read": 1,
+   "report": 1,
+   "role": "Accounts User"
+  }
+ ],
+ "sort_field": "priority",
+ "sort_order": "ASC",
+ "states": [],
+ "title_field": "title",
+ "show_title_field_in_link": 1,
+ "track_changes": 1
+}

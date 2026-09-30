@@ -1,10 +1,9 @@
 """The extract stage.
 
-The app ships no working extractor on purpose, so most of what is worth testing
-is the seam: that the registry resolves to the no-op, that the no-op costs
-nothing, and that a real extractor plugged in behind it moves a letter along and
-lands its answer on the right fields. The last one is what the seam exists for,
-so it is tested with an extractor registered inside the test rather than assumed.
+What is worth testing is the seam: that the registry resolves to the no-op, that
+the no-op costs nothing, and that a real extractor plugged in behind it moves a
+letter along and lands its answer in an Extraction Log, never on the letter. It is
+tested with an extractor registered inside the test rather than assumed.
 """
 
 from __future__ import annotations
@@ -18,8 +17,9 @@ from epost_connector.epost.sync import sync_letters
 from epost_connector.extraction import registry
 from epost_connector.extraction.base import ExtractionResult, LetterExtractor
 from epost_connector.extraction.noop import NoopExtractor
-from epost_connector.extraction.pipeline import analyze, analyze_letter
+from epost_connector.extraction.pipeline import extract_letter
 from epost_connector.extraction.registry import get_extractor
+from epost_connector.inbox.process import process
 from epost_connector.tests.site_base import ePostSiteTestCase, registered_extractor
 
 
@@ -66,6 +66,25 @@ class RegistryTest(ePostSiteTestCase):
 		self.assertIsNone(NoopExtractor().extract(None, b"%PDF-1.4 whatever"))
 
 
+LOG = "ePost Extraction Log"
+
+#: Fields extraction used to write onto the letter. The letter is now the raw
+#: import only; none of these may come back.
+REMOVED_FIELDS = (
+	"vendor_name",
+	"invoice_number",
+	"invoice_date",
+	"due_date",
+	"currency",
+	"amount",
+	"vat_amount",
+	"extraction_raw",
+	"booking_suggestion",
+)
+# `document_kind` is back on the letter as pipeline state: the type a person
+# confirmed in the review, which the extraction log cannot hold.
+
+
 class NoopPipelineTest(ePostSiteTestCase):
 	def test_a_letter_stops_at_downloaded_while_the_extractor_is_none(self):
 		self.state.content_override.clear()
@@ -73,8 +92,7 @@ class NoopPipelineTest(ePostSiteTestCase):
 
 		doc = self.letter_doc("inbox-1")
 		self.assertEqual(doc.status, "Downloaded")
-		self.assertIsNone(doc.vendor_name)
-		self.assertIsNone(doc.invoice_number)
+		self.assertIsNone(doc.extraction_log)
 
 	def test_the_noop_never_reads_the_pdf_off_the_disk(self):
 		"""It runs on every letter of every hourly sync; it must cost nothing."""
@@ -83,7 +101,7 @@ class NoopPipelineTest(ePostSiteTestCase):
 		doc = self.letter_doc("inbox-1")
 
 		with _no_file_reads() as opened:
-			self.assertFalse(analyze_letter(doc, force=True))
+			self.assertIsNone(extract_letter(doc, force=True))
 
 		self.assertEqual(opened, [])
 
@@ -92,7 +110,15 @@ class NoopPipelineTest(ePostSiteTestCase):
 		doc = self.letter_doc("inbox-html-error")
 
 		self.assertFalse(doc.file)
-		self.assertFalse(analyze_letter(doc, force=True))
+		self.assertIsNone(extract_letter(doc, force=True))
+
+
+class RawLetterTest(ePostSiteTestCase):
+	def test_the_letter_carries_no_extracted_fields(self):
+		meta = frappe.get_meta("ePost Letter")
+		for field in REMOVED_FIELDS:
+			with self.subTest(field=field):
+				self.assertFalse(meta.has_field(field))
 
 
 class ExtractorPipelineTest(ePostSiteTestCase):
@@ -102,9 +128,14 @@ class ExtractorPipelineTest(ePostSiteTestCase):
 		super().setUp()
 		self.state.content_override.clear()
 
-	def test_a_result_advances_the_status_and_lands_on_the_fields(self):
+	def log_of(self, letter_id: str):
+		doc = self.letter_doc(letter_id)
+		self.assertTrue(doc.extraction_log, "no extraction log was linked")
+		return frappe.get_doc(LOG, doc.extraction_log)
+
+	def test_a_result_lands_in_a_log_and_the_letter_waits_for_its_supplier(self):
 		result = ExtractionResult(
-			vendor_name="Muster Elektro AG",
+			vendor_name="Nobody We Know AG",
 			invoice_number="RE-2024-0042",
 			invoice_date="2024-03-01",
 			due_date="2024-03-31",
@@ -113,99 +144,56 @@ class ExtractorPipelineTest(ePostSiteTestCase):
 			vat_amount=8.1,
 			gross_amount=108.1,
 			confidence=0.87,
-			raw={"engine": "test"},
+			raw={"model": "test"},
 		)
 
 		with _extractor_returning(result):
 			sync_letters()
 
+		log = self.log_of("inbox-1")
+		self.assertEqual(log.kind, "Extraction")
+		self.assertEqual(log.vendor_name, "Nobody We Know AG")
+		self.assertEqual(log.invoice_number, "RE-2024-0042")
+		self.assertEqual(log.invoice_date, datetime.date(2024, 3, 1))
+		self.assertEqual(log.currency, "CHF")
+		self.assertEqual(log.gross_amount, 108.1)
+		self.assertEqual(log.confidence, 0.87)
+		self.assertEqual(log.model, "test")
+
 		doc = self.letter_doc("inbox-1")
-		self.assertEqual(doc.status, "Analyzed")
-		self.assertEqual(doc.vendor_name, "Muster Elektro AG")
-		self.assertEqual(doc.invoice_number, "RE-2024-0042")
-		self.assertEqual(doc.invoice_date, datetime.date(2024, 3, 1))
-		self.assertEqual(doc.due_date, datetime.date(2024, 3, 31))
-		self.assertEqual(doc.currency, "CHF")
-		self.assertEqual(doc.amount, 108.1)
-		self.assertEqual(doc.vat_amount, 8.1)
-		self.assertEqual(doc.extraction_confidence, 0.87)
-		self.assertEqual(frappe.parse_json(doc.extraction_raw), {"engine": "test"})
+		self.assertEqual(doc.status, "Waiting for Supplier")
+		self.assertIn("Nobody We Know AG", doc.processing_note)
 
-	def test_the_gross_amount_wins_over_the_net_one(self):
-		with _extractor_returning(ExtractionResult(net_amount=100.0, gross_amount=108.1)):
+	def test_a_letter_without_an_amount_waits_for_review(self):
+		with _extractor_returning(ExtractionResult(invoice_number="RE-1")):
 			sync_letters()
 
-		self.assertEqual(self.letter_doc("inbox-1").amount, 108.1)
-
-	def test_the_net_amount_is_used_when_there_is_no_gross_one(self):
-		with _extractor_returning(ExtractionResult(net_amount=100.0)):
-			sync_letters()
-
-		self.assertEqual(self.letter_doc("inbox-1").amount, 100.0)
+		doc = self.letter_doc("inbox-1")
+		self.assertEqual(doc.status, "Needs Review")
+		self.assertTrue(doc.processing_note)
 
 	def test_a_currency_erpnext_does_not_know_is_dropped_not_saved(self):
-		"""`currency` is a Link; an unknown code would fail validation on save."""
+		"""`currency` is a Link; an unknown code would fail the log's insert."""
 		with _extractor_returning(ExtractionResult(currency="XYZ", gross_amount=10.0)):
 			sync_letters()
 
-		doc = self.letter_doc("inbox-1")
-		self.assertIsNone(doc.currency)
-		self.assertEqual(doc.status, "Analyzed")
-
-	def test_a_currency_the_extractor_did_not_find_is_cleared_not_left_behind(self):
-		with _extractor_returning(ExtractionResult(currency="CHF", gross_amount=10.0)):
-			sync_letters()
-		self.assertEqual(self.letter_doc("inbox-1").currency, "CHF")
-
-		doc = self.letter_doc("inbox-1")
-		with _extractor_returning(ExtractionResult(gross_amount=10.0)):
-			analyze_letter(doc, force=True)
-
-		self.assertIsNone(self.letter_doc("inbox-1").currency)
-
-
-class DefaultedFieldTest(ePostSiteTestCase):
-	"""An extraction field must mean "this was read off the document"."""
-
-	def test_a_letter_nobody_has_read_carries_no_currency(self):
-		"""Frappe fills missing Link fields from the site defaults on insert.
-
-		A letter would otherwise arrive holding the site currency, and the
-		importer reports whatever is here as detected on the letter — a claim
-		about a PDF nothing has opened.
-		"""
-		self.state.content_override.clear()
-		sync_letters()
-
-		site_default = frappe.defaults.get_defaults().get("currency")
-		self.assertTrue(site_default, "the site has no default currency; this test proves nothing")
-
-		for letter_id in self.letter_ids():
-			with self.subTest(letter=letter_id):
-				self.assertIsNone(self.letter_doc(letter_id).currency)
-
-	def test_the_other_extraction_fields_start_empty_too(self):
-		self.state.content_override.clear()
-		sync_letters()
-		doc = self.letter_doc("inbox-1")
-
-		for field in ("vendor_name", "invoice_number", "invoice_date", "due_date"):
-			with self.subTest(field=field):
-				self.assertIsNone(doc.get(field))
+		self.assertIsNone(self.log_of("inbox-1").currency)
 
 	def test_an_unparseable_date_is_dropped_rather_than_losing_the_result(self):
 		with _extractor_returning(ExtractionResult(invoice_number="RE-1", invoice_date="not a date")):
 			sync_letters()
 
-		doc = self.letter_doc("inbox-1")
-		self.assertIsNone(doc.invoice_date)
-		self.assertEqual(doc.invoice_number, "RE-1")
+		log = self.log_of("inbox-1")
+		self.assertIsNone(log.invoice_date)
+		self.assertEqual(log.invoice_number, "RE-1")
 
 	def test_an_extractor_returning_nothing_leaves_the_letter_at_downloaded(self):
 		with _extractor_returning(None):
 			summary = sync_letters()
 
-		self.assertEqual(self.letter_doc("inbox-1").status, "Downloaded")
+		doc = self.letter_doc("inbox-1")
+		self.assertEqual(doc.status, "Downloaded")
+		self.assertIsNone(doc.extraction_log)
 		self.assertEqual(summary["letters_analyzed"], 0)
 
 	def test_the_extractor_is_handed_the_bytes_that_were_downloaded(self):
@@ -219,20 +207,20 @@ class DefaultedFieldTest(ePostSiteTestCase):
 		# The id is in the PDF, so this proves the right letter's bytes arrived.
 		self.assertIn(b"inbox-1", seen[doc.letter_id])
 
-	def test_re_running_extraction_by_hand_forces_it_past_the_status_gate(self):
-		with _extractor_returning(ExtractionResult(invoice_number="RE-1")):
+	def test_processing_again_by_hand_starts_over_from_extraction(self):
+		calls: list[str] = []
+		with _extractor_counting(calls):
 			sync_letters()
 			doc = self.letter_doc("inbox-1")
-			self.assertEqual(doc.status, "Analyzed")
+			self.assertEqual(doc.status, "Needs Review")
+			before = len(calls)
 
-			# Already Analyzed, so only `force` gets it to run again.
-			self.assertFalse(analyze_letter(doc))
-			result = analyze(doc.name)
+			result = process(doc.name, force=1)
 
-		self.assertTrue(result["extracted"])
-		self.assertEqual(result["status"], "Analyzed")
+		self.assertEqual(len(calls), before + 1)
+		self.assertEqual(result["status"], "Needs Review")
 
-	def test_a_second_sync_does_not_re_analyse_an_analysed_letter(self):
+	def test_a_second_sync_does_not_re_extract_a_processed_letter(self):
 		calls: list[str] = []
 
 		with _extractor_counting(calls):

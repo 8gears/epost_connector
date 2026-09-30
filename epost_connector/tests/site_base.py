@@ -22,7 +22,7 @@ from epost_connector.tests import mock_epost
 from epost_connector.tests.mock_epost import COMPANY_ID, TENANT_ID, MockePost
 
 #: Doctypes this app owns outright. Nothing outside them links to their rows.
-OWNED_DOCTYPES = ("ePost Letter", "ePost Sync Log")
+OWNED_DOCTYPES = ("ePost Letter", "ePost Sync Log", "ePost Extraction Log")
 
 
 def purge() -> None:
@@ -96,6 +96,9 @@ class ePostSiteTestCase(IntegrationTestCase):
 		"default_item_code": None,
 		"default_expense_account": None,
 		"default_cost_center": None,
+		"flow_model": None,
+		"booking_use_llm": 0,
+		"mixed_taxes_template": None,
 		"last_sync_at": None,
 		"last_sync_status": None,
 	}

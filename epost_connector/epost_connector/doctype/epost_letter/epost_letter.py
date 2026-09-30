@@ -12,23 +12,18 @@ from epost_connector.epost.sync import STATUS_RANK
 
 
 class ePostLetter(Document):
-	def before_insert(self) -> None:
-		# `Document.__init__` fills missing Link fields from the site and user
-		# defaults, so a letter nobody has read yet arrives already carrying the
-		# default currency. Every field in the Extraction section has to mean
-		# "this is what was read off the document": the importer goes on to
-		# report a currency here as detected on the letter, and it would be
-		# saying that about a PDF nothing has opened.
-		self.currency = None
-
 	def validate(self) -> None:
 		self._block_status_regression()
 
-	def _block_status_regression(self) -> None:
-		"""The pipeline runs one way, with two deliberate escape hatches.
+	def on_update(self) -> None:
+		self._continue_when_supplier_is_chosen()
 
-		"Ignored" is a decision a user may take at any point, and a letter whose
-		Purchase Invoice was deleted must be able to come back into the queue.
+	def _block_status_regression(self) -> None:
+		"""The pipeline runs one way, with deliberate escape hatches.
+
+		"Ignored" is a decision a user may take at any point; a letter whose
+		Purchase Invoice was deleted must be able to come back into the queue;
+		and an explicit re-run (`flags.reprocess`) starts a letter over.
 		"""
 		previous = self.get_doc_before_save()
 		if not previous or previous.status == self.status:
@@ -37,10 +32,10 @@ class ePostLetter(Document):
 		if STATUS_RANK.get(self.status, 0) >= STATUS_RANK.get(previous.status, 0):
 			return
 
-		if self.status == "Ignored":
+		if self.status == "Ignored" or self.flags.reprocess:
 			return
 
-		if previous.status == "Imported" and not (
+		if previous.status == "Drafted" and not (
 			self.purchase_invoice and frappe.db.exists("Purchase Invoice", self.purchase_invoice)
 		):
 			return
@@ -48,6 +43,20 @@ class ePostLetter(Document):
 		frappe.throw(
 			_("Status cannot move back from {0} to {1}").format(previous.status, self.status),
 			title=_("Pipeline runs forward"),
+		)
+
+	def _continue_when_supplier_is_chosen(self) -> None:
+		"""A supplier set on a waiting letter is the reviewer's answer; carry on."""
+		if self.status != "Waiting for Supplier" or not self.supplier or self.flags.in_processing:
+			return
+		if not self.has_value_changed("supplier"):
+			return
+		frappe.enqueue(
+			"epost_connector.inbox.process.process_letter_by_name",
+			queue="long",
+			enqueue_after_commit=True,
+			letter_name=self.name,
+			confirmed=True,
 		)
 
 

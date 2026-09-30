@@ -163,12 +163,12 @@ class ExtractorPipelineTest(ePostSiteTestCase):
 		self.assertEqual(doc.status, "Waiting for Supplier")
 		self.assertIn("Nobody We Know AG", doc.processing_note)
 
-	def test_a_letter_without_an_amount_is_not_bookable(self):
+	def test_a_letter_without_an_amount_waits_for_review(self):
 		with _extractor_returning(ExtractionResult(invoice_number="RE-1")):
 			sync_letters()
 
 		doc = self.letter_doc("inbox-1")
-		self.assertEqual(doc.status, "Not Bookable")
+		self.assertEqual(doc.status, "Needs Review")
 		self.assertTrue(doc.processing_note)
 
 	def test_a_currency_erpnext_does_not_know_is_dropped_not_saved(self):
@@ -211,13 +211,13 @@ class ExtractorPipelineTest(ePostSiteTestCase):
 		with _extractor_counting(calls):
 			sync_letters()
 			doc = self.letter_doc("inbox-1")
-			self.assertEqual(doc.status, "Not Bookable")
+			self.assertEqual(doc.status, "Needs Review")
 			before = len(calls)
 
 			result = process(doc.name, force=1)
 
 		self.assertEqual(len(calls), before + 1)
-		self.assertEqual(result["status"], "Not Bookable")
+		self.assertEqual(result["status"], "Needs Review")
 
 	def test_a_second_sync_does_not_re_extract_a_processed_letter(self):
 		calls: list[str] = []

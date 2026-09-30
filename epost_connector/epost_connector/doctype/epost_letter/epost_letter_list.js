@@ -2,6 +2,7 @@ const STATUS_COLORS = {
 	New: "orange",
 	Downloaded: "blue",
 	"Waiting for Supplier": "orange",
+	"Needs Review": "orange",
 	Drafted: "green",
 	"Not Bookable": "gray",
 	Duplicate: "gray",
@@ -9,10 +10,10 @@ const STATUS_COLORS = {
 };
 
 // The views a bookkeeper actually works from, offered under a Quick Filters
-// button. "Waiting for Supplier" is the only queue that needs a human here; the
-// drafts themselves are reviewed in the Purchase Invoice list.
+// button. "To Review" is the queue that needs a human here; the drafts
+// themselves are reviewed in the Purchase Invoice list.
 const QUICK_FILTERS = {
-	"Waiting for Supplier": [["status", "=", "Waiting for Supplier"]],
+	"To Review": [["status", "in", ["Waiting for Supplier", "Needs Review"]]],
 	"Not Processed": [["status", "in", ["New", "Downloaded"]]],
 	Drafted: [["status", "=", "Drafted"]],
 	"Not Bookable": [["status", "in", ["Not Bookable", "Duplicate"]]],
@@ -71,6 +72,7 @@ frappe.listview_settings["ePost Letter"] = {
 			__("Quick Filters")
 		);
 
+		listview.page.add_action_item(__("Mark as Not Bookable"), () => bulk_not_bookable(listview));
 		listview.page.add_action_item(__("Mark as Ignored"), () => bulk_ignore(listview));
 	},
 };
@@ -84,6 +86,23 @@ function apply_quick_filter(listview, filters) {
 	listview.filter_area
 		.clear()
 		.then(() => listview.filter_area.add(filters.map((f) => ["ePost Letter", ...f])));
+}
+
+function bulk_not_bookable(listview) {
+	const names = listview.get_checked_items(true);
+	if (!names.length) {
+		return;
+	}
+
+	frappe.confirm(
+		__("Confirm that {0} letters are not booked? Drafted and ignored letters are left as they are.", [
+			names.length,
+		]),
+		() =>
+			frappe
+				.xcall("epost_connector.inbox.process.mark_not_bookable", { names })
+				.then(() => listview.refresh())
+	);
 }
 
 function bulk_ignore(listview) {

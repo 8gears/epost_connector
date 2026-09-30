@@ -126,7 +126,7 @@ class FlowPipelineTest(ePostSiteTestCase):
 		self.state.content_override.clear()
 		self.configure_settings(extractor="Flow", flow_model="Test Model")
 
-	def test_a_correspondence_letter_is_not_bookable_and_the_sync_still_succeeds(self):
+	def test_a_correspondence_letter_is_held_for_review_and_the_sync_still_succeeds(self):
 		answer = {"document_kind": "Correspondence", "summary": "A newsletter.", "confidence": 0.8}
 		with (
 			patch.object(flow, "_pdf_text", return_value=TEXT),
@@ -135,7 +135,7 @@ class FlowPipelineTest(ePostSiteTestCase):
 			sync_letters()
 
 		doc = self.letter_doc("inbox-1")
-		self.assertEqual(doc.status, "Not Bookable")
+		self.assertEqual(doc.status, "Needs Review")
 		self.assertFalse(doc.purchase_invoice)
 		log = frappe.get_doc("ePost Extraction Log", doc.extraction_log)
 		self.assertEqual(log.document_kind, "Correspondence")

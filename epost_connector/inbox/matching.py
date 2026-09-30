@@ -129,6 +129,41 @@ def learn(supplier: str, values: Any, confirmed: bool) -> None:
 	).insert(ignore_permissions=True)
 
 
+def forget(supplier: str, values: Any) -> None:
+	"""Undo what made `supplier` match an issuer a person says it is not.
+
+	Aliases of `supplier` carrying the issuer's name, VAT id or IBAN go, and so
+	does the VAT id on the Supplier itself when it is the issuer's: the letter
+	prints it, and a person just said it belongs to someone else. A comment on
+	the Supplier records what was removed.
+	"""
+	name = normalise(getattr(values, "vendor_name", None))
+	tax_id = tax_key(getattr(values, "vendor_tax_id", None))
+	iban = compact(getattr(values, "iban", None))
+	removed = []
+	for alias in frappe.get_all(
+		ALIAS_DOCTYPE, filters={"supplier": supplier}, fields=["name", "alias_name", "tax_id", "iban"]
+	):
+		if (
+			(name and normalise(alias.alias_name) == name)
+			or (tax_id and tax_key(alias.tax_id) == tax_id)
+			or (iban and compact(alias.iban) == iban)
+		):
+			frappe.delete_doc(ALIAS_DOCTYPE, alias.name, ignore_permissions=True)
+			removed.append(alias.alias_name)
+	own_tax_id = frappe.db.get_value("Supplier", supplier, "tax_id")
+	if tax_id and own_tax_id and tax_key(own_tax_id) == tax_id:
+		frappe.db.set_value("Supplier", supplier, "tax_id", None, update_modified=False)
+		removed.append(own_tax_id)
+	if removed:
+		frappe.get_doc("Supplier", supplier).add_comment(
+			"Info",
+			frappe._("ePost review: {0} belongs to another supplier; removed from this one.").format(
+				", ".join(removed)
+			),
+		)
+
+
 def closest(names: list[str], limit: int = 3) -> list[dict]:
 	"""Suppliers sharing the most name words with `names`, for a human to choose from."""
 	wanted = set().union(*(tokens(n) for n in names)) if names else set()

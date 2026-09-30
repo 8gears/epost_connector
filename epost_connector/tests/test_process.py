@@ -14,7 +14,12 @@ import frappe
 
 from epost_connector.epost.sync import sync_letters
 from epost_connector.extraction.base import ExtractionResult, LetterExtractor
-from epost_connector.inbox.process import process_letter, process_letter_by_name
+from epost_connector.inbox.process import (
+	mark_not_bookable,
+	process_letter,
+	process_letter_by_name,
+	review,
+)
 from epost_connector.tests.site_base import (
 	cost_center,
 	ensure_company,
@@ -132,22 +137,32 @@ class ProcessTest(ProcessTestCase):
 				self.assertEqual(row.status, "Duplicate")
 				self.assertIn(drafted[0].purchase_invoice, row.processing_note)
 
-	def test_a_routing_rule_stops_a_letter_before_any_supplier_is_looked_for(self):
-		frappe.get_doc(
-			{
-				"doctype": "ePost Rule",
-				"title": "reminders are not booked",
-				"company": self.company,
-				"document_kind": "Reminder",
-				"set_status": "Not Bookable",
-			}
-		).insert(ignore_permissions=True)
+	def reminder_rule(self) -> str:
+		return (
+			frappe.get_doc(
+				{
+					"doctype": "ePost Rule",
+					"title": "reminders are not booked",
+					"company": self.company,
+					"document_kind": "Reminder",
+					"set_status": "Not Bookable",
+				}
+			)
+			.insert(ignore_permissions=True)
+			.name
+		)
+
+	def test_a_routing_rule_stops_a_letter_for_review_not_for_good(self):
+		"""The rule acts on the type the model read, which may be wrong."""
+		rule = self.reminder_rule()
 
 		with _returning(_invoice(document_kind="Reminder")):
 			sync_letters()
 
 		doc = self.letter_doc("inbox-1")
-		self.assertEqual(doc.status, "Not Bookable")
+		self.assertEqual(doc.status, "Needs Review")
+		self.assertIn(rule, doc.processing_note)
+		self.assertEqual(doc.document_kind, "Reminder")
 		self.assertFalse(doc.purchase_invoice)
 
 	def test_a_drafted_letter_is_left_alone(self):
@@ -160,12 +175,12 @@ class ProcessTest(ProcessTestCase):
 
 		self.assertEqual(self.letter_doc("inbox-1").status, "Drafted")
 
-	def test_an_invoice_dated_before_any_fiscal_year_is_not_bookable(self):
+	def test_an_invoice_dated_before_any_fiscal_year_waits_for_review(self):
 		with _returning(_invoice(invoice_date="1999-01-15")):
 			sync_letters()
 
 		doc = self.letter_doc("inbox-1")
-		self.assertEqual(doc.status, "Not Bookable")
+		self.assertEqual(doc.status, "Needs Review")
 		self.assertIn("fiscal year", doc.processing_note)
 		self.assertFalse(doc.purchase_invoice)
 
@@ -202,3 +217,186 @@ class ProcessTest(ProcessTestCase):
 
 		self.assertEqual(result["matched"], len(waiting) - 1)
 		self.assertEqual(frappe.db.count("ePost Letter", {"status": "Waiting for Supplier"}), 0)
+
+
+class KindDoubtTest(ProcessTestCase):
+	def test_a_non_invoice_that_carries_an_invoice_number_total_and_vat_is_doubted(self):
+		"""The Cornèrcard case: skipped on the model's word, though it looked like an invoice."""
+		with _returning(_invoice(document_kind="Correspondence")):
+			sync_letters()
+
+		doc = self.letter_doc("inbox-1")
+		self.assertEqual(doc.status, "Needs Review")
+		self.assertIn("may be an invoice", doc.processing_note)
+
+	def test_a_credit_note_the_letter_never_calls_one_is_doubted(self):
+		with (
+			_returning(_invoice(document_kind="Credit Note")),
+			patch(
+				"epost_connector.inbox.process._letter_text", return_value="Rechnung Nr. 5 Total CHF 108.10"
+			),
+		):
+			sync_letters()
+
+		self.assertEqual(self.letter_doc("inbox-1").status, "Needs Review")
+
+	def test_an_invoice_that_mentions_a_credit_is_doubted(self):
+		with (
+			_returning(_invoice()),
+			patch("epost_connector.inbox.process._letter_text", return_value="Gutschrift Nr. 5 CHF 108.10"),
+		):
+			sync_letters()
+
+		doc = self.letter_doc("inbox-1")
+		self.assertEqual(doc.status, "Needs Review")
+		self.assertIn("credit note", doc.processing_note)
+
+	def test_a_plain_invoice_is_not_doubted(self):
+		with (
+			_returning(_invoice()),
+			patch("epost_connector.inbox.process._letter_text", return_value="Rechnung Nr. 5 CHF 108.10"),
+		):
+			sync_letters()
+
+		self.assertEqual(self.letter_doc("inbox-1").status, "Drafted")
+
+
+class ReviewTest(ProcessTestCase):
+	"""A person corrects what the pipeline decided, at whatever status it reached."""
+
+	def setUp(self) -> None:
+		super().setUp()
+		self.other = ensure_supplier("Pipeline Other Supplier AG")
+		frappe.db.set_value("Supplier", self.other, "tax_id", None)
+		frappe.db.delete("Supplier Alias", {"supplier": self.other})
+		frappe.db.commit()
+
+	def drafted(self, **values):
+		with _returning(_invoice(**values)):
+			sync_letters()
+		doc = self.letter_doc("inbox-1")
+		self.assertEqual(doc.status, "Drafted")
+		return doc
+
+	def review(self, doc, **values):
+		with patch("frappe.enqueue"):
+			review(doc.name, **values)
+		return self.letter_doc(doc.letter_id)
+
+	def test_a_wrong_supplier_on_a_draft_is_replaced_and_the_draft_rebuilt(self):
+		doc = self.drafted()
+		old_invoice = doc.purchase_invoice
+
+		doc = self.review(doc, document_kind="Invoice", supplier=self.other)
+
+		self.assertEqual(doc.status, "Drafted")
+		self.assertFalse(frappe.db.exists("Purchase Invoice", old_invoice))
+		invoice = frappe.get_doc("Purchase Invoice", doc.purchase_invoice)
+		self.assertEqual((invoice.supplier, invoice.docstatus), (self.other, 0))
+		self.assertIn("chosen by a reviewer", invoice.review_notes)
+		self.assertTrue(doc.reviewed)
+		self.assertTrue(
+			frappe.db.exists("File", {"file_url": doc.file, "attached_to_doctype": "ePost Letter"})
+		)
+
+	def test_the_correction_unlearns_the_wrong_match_and_learns_the_right_one(self):
+		frappe.get_doc(
+			{"doctype": "Supplier Alias", "alias_name": "Issuer Printed Name", "supplier": self.supplier}
+		).insert(ignore_permissions=True)
+		frappe.db.set_value("Supplier", self.supplier, "tax_id", "CHE-123.456.789 MWST")
+		doc = self.drafted(vendor_name="Issuer Printed Name", vendor_tax_id="CHE-123.456.789")
+
+		self.review(doc, document_kind="Invoice", supplier=self.other)
+
+		self.assertFalse(frappe.db.exists("Supplier Alias", {"supplier": self.supplier}))
+		self.assertFalse(frappe.db.get_value("Supplier", self.supplier, "tax_id"))
+		self.assertEqual(frappe.db.get_value("Supplier", self.other, "tax_id"), "CHE-123.456.789")
+		self.assertEqual(
+			frappe.db.get_value("Supplier Alias", {"alias_name": "Issuer Printed Name"}, "supplier"),
+			self.other,
+		)
+
+	def test_a_credit_note_read_as_an_invoice_is_rebuilt_as_a_return(self):
+		doc = self.drafted()
+
+		doc = self.review(doc, document_kind="Credit Note", supplier=self.supplier)
+
+		self.assertEqual(frappe.db.get_value("Purchase Invoice", doc.purchase_invoice, "is_return"), 1)
+
+	def test_a_type_that_is_never_booked_removes_the_draft(self):
+		doc = self.drafted()
+		old_invoice = doc.purchase_invoice
+
+		doc = self.review(doc, document_kind="Reminder", supplier=self.supplier)
+
+		self.assertEqual(doc.status, "Not Bookable")
+		self.assertFalse(doc.purchase_invoice)
+		self.assertFalse(frappe.db.exists("Purchase Invoice", old_invoice))
+
+	def test_an_invoice_a_rule_stopped_is_drafted_once_a_person_says_so(self):
+		frappe.get_doc(
+			{
+				"doctype": "ePost Rule",
+				"title": "reminders are not booked",
+				"company": self.company,
+				"document_kind": "Reminder",
+				"set_status": "Not Bookable",
+			}
+		).insert(ignore_permissions=True)
+		with _returning(_invoice(document_kind="Reminder")):
+			sync_letters()
+		doc = self.letter_doc("inbox-1")
+		self.assertEqual(doc.status, "Needs Review")
+
+		doc = self.review(doc, document_kind="Invoice", supplier=self.supplier)
+
+		self.assertEqual(doc.status, "Drafted")
+		self.assertEqual(doc.document_kind, "Invoice")
+
+	def test_a_misread_number_is_not_a_duplicate_once_a_person_says_so(self):
+		with _returning(_invoice(), same_number=True):
+			sync_letters()
+		duplicate = frappe.get_all("ePost Letter", filters={"status": "Duplicate"}, pluck="name")[0]
+		doc = frappe.get_doc("ePost Letter", duplicate)
+
+		doc = self.review(doc, document_kind="Invoice", supplier=self.supplier, not_duplicate=1)
+
+		self.assertEqual(doc.status, "Drafted")
+
+	def test_a_new_supplier_can_be_created_from_the_review(self):
+		doc = self.drafted()
+		name = "Pipeline Created In Review AG"
+		frappe.db.delete("Supplier", {"supplier_name": name})
+
+		doc = self.review(doc, document_kind="Invoice", new_supplier_name=name, tax_id="CHE-222.333.444")
+
+		self.assertEqual(frappe.db.get_value("Supplier", doc.supplier, "supplier_name"), name)
+		self.assertEqual(
+			frappe.db.get_value("Purchase Invoice", doc.purchase_invoice, "supplier"), doc.supplier
+		)
+		frappe.delete_doc("Purchase Invoice", doc.purchase_invoice, force=True, ignore_permissions=True)
+		frappe.db.set_value("ePost Letter", doc.name, "purchase_invoice", None)
+		frappe.delete_doc("Supplier", doc.supplier, force=True, ignore_permissions=True)
+
+	def test_a_submitted_invoice_is_not_touched(self):
+		doc = self.drafted()
+		frappe.db.set_value("Purchase Invoice", doc.purchase_invoice, "docstatus", 1)
+		try:
+			with self.assertRaises(frappe.ValidationError):
+				review(doc.name, document_kind="Invoice", supplier=self.other)
+			self.assertEqual(
+				frappe.db.get_value("Purchase Invoice", doc.purchase_invoice, "supplier"), self.supplier
+			)
+		finally:
+			frappe.db.set_value("Purchase Invoice", doc.purchase_invoice, "docstatus", 0)
+
+	def test_marking_not_bookable_records_who_decided(self):
+		with _returning(_invoice(invoice_date="1999-01-15")):
+			sync_letters()
+		doc = self.letter_doc("inbox-1")
+
+		mark_not_bookable([doc.name])
+
+		doc = self.letter_doc("inbox-1")
+		self.assertEqual(doc.status, "Not Bookable")
+		self.assertIn(frappe.session.user, doc.processing_note)

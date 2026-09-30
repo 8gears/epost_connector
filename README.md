@@ -61,12 +61,14 @@ is written onto it: extracted values live in an **ePost Extraction Log**
 result of processing is a draft Purchase Invoice, reviewed in ERPNext's own
 form. The letter carries only its pipeline state:
 
-`New` → `Downloaded` → `Waiting for Supplier` → `Drafted`, or `Not Bookable`,
-`Duplicate`, `Ignored`.
+`New` → `Downloaded` → `Waiting for Supplier` or `Needs Review` → `Drafted`, or
+`Not Bookable`, `Duplicate`, `Ignored`.
 
 `Drafted`, `Not Bookable`, `Duplicate` and `Ignored` are terminal. The sync
 still refreshes their ePost metadata but never touches their pipeline state.
-**Process again** on the letter starts one over from extraction.
+**Process again** on the letter starts one over from extraction. The pipeline
+never sets `Not Bookable` itself: what the model read may be wrong, so only a
+person confirms it.
 
 ### The sync reads the inbox, and the inbox is the whole letterbox
 
@@ -192,7 +194,7 @@ waiting for a human; **Recent Syncs** is the last few runs.
 
 ![The ePost Letter list](docs/list-view.png)
 
-Status is a coloured indicator: New and Waiting for Supplier are orange,
+Status is a coloured indicator: New, Waiting for Supplier and Needs Review are orange,
 Downloaded blue, Drafted green, Not Bookable, Duplicate and Ignored grey. A letter whose last sync failed shows a red **Sync
 Error** regardless of its status, because that is the one that needs a person.
 
@@ -202,10 +204,11 @@ carries the categories ePost put on the letter, lower-cased so that `Invoice`,
 so "show me the invoices" is one click. Every row with a PDF gets a **PDF**
 button that opens the scan without leaving the list.
 
-**Quick Filters** holds the views worth having: Waiting for Supplier, Not
-Processed, Drafted, Not Bookable, Sync Errors, Everything. The default view hides `Ignored` letters, and
-*Everything* is how you get them back. Selecting letters and choosing **Mark as
-Ignored** from the list Actions menu ignores them in bulk.
+**Quick Filters** holds the views worth having: To Review (Waiting for Supplier
+and Needs Review), Not Processed, Drafted, Not Bookable, Sync Errors,
+Everything. The default view hides `Ignored` letters, and *Everything* is how
+you get them back. Selecting letters and choosing **Mark as Not Bookable** or
+**Mark as Ignored** from the list Actions menu does it in bulk.
 
 ### A letter
 
@@ -250,8 +253,12 @@ status and a plain-language **Note** when it cannot go further:
    extractor, or when nothing is read, the letter stays `Downloaded`.
 2. **Route** with **ePost Rule** rows that set a status or a supplier, matched
    on document kind, supplier, VAT id, keyword, country. For example: kind
-   `Reminder` → `Not Bookable`; keyword `Corn[eè]r.?card` → `Not Bookable` (a
-   card statement). A letter with no amount is `Not Bookable` too.
+   `Reminder` → not bookable. A rule's stop, a letter with no amount and an
+   invoice date outside every fiscal year all end in `Needs Review`, with the
+   reason in the Note. So does a doubtful document type, found by plain checks:
+   a letter read as not an invoice that has an invoice number, a total and VAT;
+   a credit note whose text never says credit (Gutschrift, avoir, nota di
+   credito); an invoice whose text does.
 3. **Supplier**, in this order, first hit wins:
    - a **Supplier Alias** (a name, VAT id or IBAN learned from an earlier letter);
    - the Supplier's **Tax ID**, compared without spaces, dots and dashes;
@@ -264,13 +271,34 @@ status and a plain-language **Note** when it cannot go further:
      legal entity.
 
    No match: the letter is `Waiting for Supplier`, and its Note names the
-   closest suppliers. **Map Supplier** picks an existing one, **Create
-   Supplier** creates one prefilled from the letter; either continues the
-   letter. Every confirmed supplier learns the letter's VAT id (only when it
-   has none) and the name as printed, as a Supplier Alias.
+   closest suppliers. Every confirmed supplier learns the letter's VAT id
+   (only when it has none) and the name as printed, as a Supplier Alias.
 4. **Duplicate**: an invoice with the same supplier and bill number already
    exists → `Duplicate`, with the invoice named in the Note.
 5. **Draft** the Purchase Invoice → `Drafted`.
+
+### Review: supplier and document type
+
+The supplier and the document type decide what happens before a draft exists,
+so they are corrected on the letter, not on the draft. **Review** on the letter
+(or **ePost → Wrong Supplier or Type** on the draft Purchase Invoice) shows the
+issuer as read, how the supplier was found and the closest suppliers, and takes
+a document type and an existing or new supplier. At any status until the
+invoice is submitted:
+
+- an unsubmitted draft is deleted and built again, with the booking suggested
+  for the chosen supplier and a credit note drafted as a return;
+- a type that is never booked (Reminder, Contract, Correspondence, Other)
+  marks the letter `Not Bookable` instead;
+- a supplier that replaces an automatic match removes what made it match: its
+  aliases carrying the issuer's name, VAT id or IBAN, and the issuer's VAT id on
+  the Supplier itself (a comment on the Supplier says what went). The chosen
+  supplier learns them instead;
+- on a `Duplicate`, *Not a duplicate* skips the check when the number was
+  misread.
+
+A reviewed letter skips the routing rules and the type checks: the person has
+decided.
 
 ### The draft Purchase Invoice is where review happens
 

@@ -16,7 +16,7 @@ import frappe
 from epost_connector.epost.import_invoice import create_purchase_invoice
 from epost_connector.epost.sync import sync_letters
 from epost_connector.inbox import matching
-from epost_connector.inbox.process import supplier_hints
+from epost_connector.inbox.process import review_hints
 from epost_connector.tests.site_base import (
 	TEST_CURRENCY,
 	cost_center,
@@ -410,10 +410,10 @@ class SupplierMatchingTest(ImportTestCase):
 
 		self.assertIsNone(self.matched(letter))
 
-	def test_the_map_dialog_offers_the_closest_suppliers(self):
+	def test_the_review_dialog_offers_the_closest_suppliers(self):
 		self.letter_with(vendor_name="Muster Elektro Gruppe")
 
-		hints = supplier_hints(self.letter_doc("inbox-1").name)
+		hints = review_hints(self.letter_doc("inbox-1").name)
 
 		self.assertEqual(hints["vendor_name"], "Muster Elektro Gruppe")
 		self.assertIn(self.supplier, [c["supplier"] for c in hints["candidates"]])

@@ -6,8 +6,9 @@ frappe.ui.form.on("ePost Letter", {
 		// Every transition but "Ignored" is a server decision, and "Ignored" has
 		// its own button, so the field itself is never edited by hand.
 		frm.set_df_property("status", "read_only", 1);
-		// The supplier is the reviewer's answer only while the letter waits for it.
-		frm.set_df_property("supplier", "read_only", frm.doc.status !== "Waiting for Supplier");
+		// Supplier and type change through the Review dialog, which also replaces
+		// the draft and teaches the matcher; a bare field edit would do neither.
+		frm.set_df_property("supplier", "read_only", 1);
 
 		// The page indicator is not set here on purpose. getdoctype ships
 		// epost_letter_list.js as meta.__list_js and model.js:255 evaluates it on
@@ -17,6 +18,12 @@ frappe.ui.form.on("ePost Letter", {
 		set_headline(frm);
 		render_preview(frm);
 		add_actions(frm);
+
+		// The Purchase Invoice form sends people here to review its letter.
+		if (frappe.route_options && frappe.route_options.epost_review) {
+			frappe.route_options = null;
+			review(frm);
+		}
 	},
 });
 
@@ -47,7 +54,7 @@ function set_headline(frm) {
 	}
 
 	if (frm.doc.processing_note) {
-		const color = frm.doc.status === "Waiting for Supplier" ? "orange" : "blue";
+		const color = ["Waiting for Supplier", "Needs Review"].includes(frm.doc.status) ? "orange" : "blue";
 		frm.dashboard.set_headline(esc(frm.doc.processing_note), color, true);
 	}
 }
@@ -58,6 +65,8 @@ function add_actions(frm) {
 	}
 
 	const terminal = TERMINAL_STATUSES.includes(frm.doc.status);
+	// Anything the pipeline decided can be reviewed, until the invoice is submitted.
+	const reviewable = frm.doc.extraction_log && !["New", "Downloaded", "Ignored"].includes(frm.doc.status);
 
 	if (frm.doc.file && frm.doc.status !== "Drafted") {
 		frm.add_custom_button(__("Process again"), () => process(frm, 1), __("Actions"));
@@ -71,17 +80,22 @@ function add_actions(frm) {
 		frm.add_custom_button(__("Open Purchase Invoice"), () =>
 			frappe.set_route("Form", "Purchase Invoice", frm.doc.purchase_invoice)
 		).addClass("btn-primary");
+		if (reviewable) {
+			frm.add_custom_button(__("Review Supplier and Type"), () => review(frm));
+		}
 		return;
 	}
 
 	// One primary action at a time, and it is whatever moves this letter forward.
 	if (!frm.doc.file) {
 		frm.add_custom_button(__("Download PDF"), () => download_pdf(frm)).addClass("btn-primary");
-	} else if (frm.doc.status === "Waiting for Supplier") {
-		frm.add_custom_button(__("Map Supplier"), () => map_supplier(frm)).addClass("btn-primary");
-		frm.add_custom_button(__("Create Supplier"), () => create_supplier(frm));
 	} else if (frm.doc.status === "Downloaded") {
 		frm.add_custom_button(__("Process"), () => process(frm, 0)).addClass("btn-primary");
+	} else if (reviewable) {
+		const button = frm.add_custom_button(__("Review"), () => review(frm));
+		if (["Waiting for Supplier", "Needs Review", "Duplicate"].includes(frm.doc.status)) {
+			button.addClass("btn-primary");
+		}
 	}
 }
 
@@ -174,7 +188,9 @@ function process(frm, force) {
 }
 
 function not_bookable(frm) {
-	frm.set_value("status", "Not Bookable").then(() => frm.save());
+	frappe
+		.xcall("epost_connector.inbox.process.mark_not_bookable", { names: [frm.doc.name] })
+		.then(() => frm.reload_doc());
 }
 
 function ignore(frm) {
@@ -187,10 +203,6 @@ function ignore(frm) {
 	);
 }
 
-function supplier_hints(frm) {
-	return frappe.xcall("epost_connector.inbox.process.supplier_hints", { letter_name: frm.doc.name });
-}
-
 function issuer_html(hints) {
 	const esc = frappe.utils.escape_html;
 	const rows = [
@@ -199,6 +211,10 @@ function issuer_html(hints) {
 		[__("Country"), hints.vendor_country],
 		[__("Address"), hints.vendor_address],
 		[__("IBAN"), hints.iban],
+		[__("Invoice No."), hints.invoice_number],
+		[__("Type as read"), hints.read_kind && __(hints.read_kind)],
+		[__("Supplier found"), hints.supplier_match],
+		[__("Note"), hints.note],
 	]
 		.filter(([, value]) => value)
 		.map(([label, value]) => `<tr><td class="text-muted">${label}</td><td>${esc(value).replace(/\n/g, "<br>")}</td></tr>`)
@@ -206,69 +222,115 @@ function issuer_html(hints) {
 	return `<p class="text-muted small">${__("Read off the letter")}</p><table class="table table-sm small">${rows}</table>`;
 }
 
-function map_supplier(frm) {
-	supplier_hints(frm).then((hints) => {
+// Matches NOT_BOOKABLE_KINDS in inbox/process.py.
+const NOT_BOOKABLE_KINDS = ["Reminder", "Contract", "Correspondence", "Other"];
+
+function review(frm) {
+	frappe.xcall("epost_connector.inbox.process.review_hints", { letter_name: frm.doc.name }).then((hints) => {
+		if (hints.submitted_invoice) {
+			frappe.msgprint(
+				__("Purchase Invoice {0} is submitted. Cancel it first, then review the letter.", [
+					frappe.utils.get_form_link("Purchase Invoice", hints.submitted_invoice, true),
+				])
+			);
+			return;
+		}
 		const guesses = (hints.candidates || []).map((c) => c.supplier);
-		const dialog = new frappe.ui.Dialog({
-			title: __("Map Supplier"),
+		const kinds = frappe.meta.get_docfield("ePost Letter", "document_kind").options;
+		// Declared first: setting the defaults fires onchange before `new` returns.
+		let dialog = null;
+		dialog = new frappe.ui.Dialog({
+			title: __("Review Supplier and Type"),
+			size: "large",
 			fields: [
 				{ fieldname: "issuer", fieldtype: "HTML", options: issuer_html(hints) },
+				{
+					fieldname: "document_kind",
+					fieldtype: "Select",
+					label: __("Document Type"),
+					options: kinds,
+					reqd: 1,
+					default: hints.document_kind,
+					onchange: () => set_primary_label(dialog),
+				},
+				{ fieldname: "supplier_section", fieldtype: "Section Break", label: __("Supplier") },
 				{
 					fieldname: "supplier",
 					fieldtype: "Link",
-					label: __("Supplier"),
+					label: __("Existing Supplier"),
 					options: "Supplier",
-					reqd: 1,
-					default: guesses[0],
+					default: hints.supplier || guesses[0],
+					depends_on: "eval:!doc.create_new",
 					description: guesses.length
 						? __("Closest existing: {0}", [guesses.map(frappe.utils.escape_html).join(", ")])
-						: __("No existing supplier looks similar. Create one instead."),
+						: __("No existing supplier looks similar."),
 				},
-			],
-			primary_action_label: __("Map and continue"),
-			primary_action: ({ supplier }) => {
-				dialog.hide();
-				frm.set_value("supplier", supplier).then(() => frm.save());
-			},
-		});
-		dialog.show();
-	});
-}
-
-function create_supplier(frm) {
-	supplier_hints(frm).then((hints) => {
-		const dialog = new frappe.ui.Dialog({
-			title: __("Create Supplier"),
-			fields: [
-				{ fieldname: "issuer", fieldtype: "HTML", options: issuer_html(hints) },
+				{ fieldname: "create_new", fieldtype: "Check", label: __("Create a new supplier instead") },
 				{
-					fieldname: "supplier_name",
+					fieldname: "new_supplier_name",
 					fieldtype: "Data",
 					label: __("Supplier Name"),
-					reqd: 1,
 					default: hints.vendor_name,
+					depends_on: "create_new",
+					mandatory_depends_on: "create_new",
 				},
-				{ fieldname: "tax_id", fieldtype: "Data", label: __("Tax ID"), default: hints.vendor_tax_id },
+				{
+					fieldname: "tax_id",
+					fieldtype: "Data",
+					label: __("Tax ID"),
+					default: hints.vendor_tax_id,
+					depends_on: "create_new",
+				},
 				{
 					fieldname: "country",
 					fieldtype: "Link",
 					label: __("Country"),
 					options: "Country",
 					default: hints.vendor_country,
+					depends_on: "create_new",
+				},
+				{
+					fieldname: "not_duplicate",
+					fieldtype: "Check",
+					label: __("Not a duplicate: the invoice number was misread"),
+					hidden: frm.doc.status !== "Duplicate",
 				},
 			],
-			primary_action_label: __("Create and continue"),
 			primary_action: (values) => {
+				const bookable = !NOT_BOOKABLE_KINDS.includes(values.document_kind);
+				if (bookable && !values.create_new && !values.supplier) {
+					frappe.msgprint(__("Choose a supplier or create a new one."));
+					return;
+				}
 				dialog.hide();
 				frappe.call({
-					method: "epost_connector.inbox.process.create_supplier",
-					args: { letter_name: frm.doc.name, ...values },
+					method: "epost_connector.inbox.process.review",
+					args: {
+						letter_name: frm.doc.name,
+						document_kind: values.document_kind,
+						supplier: values.create_new ? null : values.supplier,
+						new_supplier_name: values.create_new ? values.new_supplier_name : null,
+						tax_id: values.create_new ? values.tax_id : null,
+						country: values.create_new ? values.country : null,
+						not_duplicate: values.not_duplicate ? 1 : 0,
+					},
 					freeze: true,
-					freeze_message: __("Creating the supplier..."),
+					freeze_message: __("Building the draft again..."),
 					callback: () => frm.reload_doc(),
 				});
 			},
 		});
+		set_primary_label(dialog);
 		dialog.show();
 	});
+}
+
+function set_primary_label(dialog) {
+	if (!dialog) {
+		return;
+	}
+	const kind = dialog.get_value("document_kind");
+	dialog
+		.get_primary_btn()
+		.html(NOT_BOOKABLE_KINDS.includes(kind) ? __("Mark Not Bookable") : __("Save and Create Draft"));
 }

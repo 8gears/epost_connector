@@ -117,8 +117,8 @@ def _apply(log: Any, result: ExtractionResult) -> None:
 	log.vat_amount = _amount(result.vat_amount)
 	log.gross_amount = _amount(result.gross_amount)
 	log.confidence = flt(result.confidence)
-	# Links: a value ERPNext has no record for is dropped, or the insert fails
-	# and the rest of the result is lost with it.
+	# Stored as text so Frappe's defaults cannot fill them on insert, and kept
+	# only when ERPNext has a record for the value.
 	log.vendor_country = (
 		result.vendor_country
 		if result.vendor_country and frappe.db.exists("Country", result.vendor_country)

@@ -14,7 +14,7 @@ import frappe
 
 from epost_connector.epost.sync import sync_letters
 from epost_connector.extraction.base import ExtractionResult, LetterExtractor
-from epost_connector.inbox.process import process_letter_by_name
+from epost_connector.inbox.process import process_letter, process_letter_by_name
 from epost_connector.tests.site_base import (
 	cost_center,
 	ensure_company,
@@ -147,3 +147,13 @@ class ProcessTest(ProcessTestCase):
 		doc = self.letter_doc("inbox-1")
 		self.assertEqual(doc.status, "Not Bookable")
 		self.assertFalse(doc.purchase_invoice)
+
+	def test_a_drafted_letter_is_left_alone(self):
+		with _returning(_invoice()):
+			sync_letters()
+			doc = self.letter_doc("inbox-1")
+			self.assertEqual(doc.status, "Drafted")
+
+			self.assertFalse(process_letter(doc))
+
+		self.assertEqual(self.letter_doc("inbox-1").status, "Drafted")

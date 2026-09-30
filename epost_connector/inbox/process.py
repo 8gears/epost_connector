@@ -27,7 +27,15 @@ LOG_DOCTYPE = "ePost Extraction Log"
 
 
 def process_letter(letter: Any, force: bool = False) -> bool:
-	"""Run the pipeline on one letter and save it. True when an extraction exists."""
+	"""Run the pipeline on one letter and save it. True when an extraction exists.
+
+	A letter the pipeline has finished with is left alone unless `force`: a
+	drafted letter re-run would find its own invoice and call itself a duplicate.
+	"""
+	from epost_connector.epost.sync import TERMINAL_STATUSES
+
+	if letter.status in TERMINAL_STATUSES and not force:
+		return False
 	letter.flags.in_processing = True
 	log = extract_letter(letter, force=force)
 	if not log:

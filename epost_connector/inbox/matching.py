@@ -58,7 +58,7 @@ class Match:
 
 def find(letter: Any, values: Any, model: str | None = None) -> Match:
 	"""Match on `values` (an extraction log or anything with its fields)."""
-	tax_id = compact(getattr(values, "vendor_tax_id", None))
+	tax_id = tax_key(getattr(values, "vendor_tax_id", None))
 	iban = compact(getattr(values, "iban", None))
 	names = [n for n in (getattr(values, "vendor_name", None), getattr(letter, "sender_name", None)) if n]
 
@@ -151,11 +151,28 @@ def compact(value: str | None) -> str:
 	return re.sub(r"[^A-Z0-9]", "", (value or "").upper())
 
 
+#: What Swiss UIDs carry after the number when the company is VAT-registered.
+VAT_SUFFIXES = ("MWST", "TVA", "IVA", "VAT")
+
+
+def tax_key(value: str | None) -> str:
+	"""A VAT or UID number reduced to what identifies the entity.
+
+	A letter prints "CHE-103.727.240 MWST"; the same number may be stored as
+	"CHE-103.727.240" or "CHE103727240".
+	"""
+	key = compact(value)
+	for suffix in VAT_SUFFIXES:
+		if key.endswith(suffix) and len(key) > len(suffix):
+			return key[: -len(suffix)]
+	return key
+
+
 def _by_alias(names: list[str], tax_id: str, iban: str) -> Match:
 	rows = frappe.get_all(ALIAS_DOCTYPE, fields=["alias_name", "supplier", "tax_id", "iban"])
 	wanted = {normalise(n) for n in names}
 	for row in rows:
-		if (tax_id and compact(row.tax_id) == tax_id) or (iban and compact(row.iban) == iban):
+		if (tax_id and tax_key(row.tax_id) == tax_id) or (iban and compact(row.iban) == iban):
 			return Match(row.supplier, "Alias")
 	hits = {row.supplier for row in rows if normalise(row.alias_name) in wanted}
 	return Match(hits.pop(), "Alias") if len(hits) == 1 else Match()
@@ -164,7 +181,7 @@ def _by_alias(names: list[str], tax_id: str, iban: str) -> Match:
 def _by_tax_id(tax_id: str) -> Match:
 	if not tax_id:
 		return Match()
-	hits = {row.name for row in _suppliers() if row.tax_id and compact(row.tax_id) == tax_id}
+	hits = {row.name for row in _suppliers() if row.tax_id and tax_key(row.tax_id) == tax_id}
 	return Match(hits.pop(), "Tax ID") if len(hits) == 1 else Match()
 
 

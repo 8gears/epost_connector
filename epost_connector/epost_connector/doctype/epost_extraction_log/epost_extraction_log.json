@@ -119,10 +119,9 @@
   },
   {
    "fieldname": "vendor_country",
-   "fieldtype": "Link",
+   "fieldtype": "Data",
    "label": "Vendor Country",
-   "read_only": 1,
-   "options": "Country"
+   "read_only": 1
   },
   {
    "fieldname": "vendor_address",
@@ -178,10 +177,9 @@
   },
   {
    "fieldname": "currency",
-   "fieldtype": "Link",
+   "fieldtype": "Data",
    "label": "Currency",
-   "read_only": 1,
-   "options": "Currency"
+   "read_only": 1
   },
   {
    "fieldname": "net_amount",
@@ -230,7 +228,7 @@
  ],
  "index_web_pages_for_search": 0,
  "links": [],
- "modified": "2026-09-30 12:00:00.000000",
+ "modified": "2026-09-30 15:00:00.000000",
  "modified_by": "Administrator",
  "module": "ePost Connector",
  "name": "ePost Extraction Log",

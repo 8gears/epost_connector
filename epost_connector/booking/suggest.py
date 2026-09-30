@@ -24,6 +24,7 @@ import frappe
 from frappe.utils import flt, nowdate
 
 from epost_connector.booking import history
+from epost_connector.inbox.matching import tax_key
 
 RULE_DOCTYPE = "ePost Rule"
 BEFORE_HISTORY = "Before history"
@@ -263,7 +264,7 @@ def _rule_matches(rule, context: BookingContext, line: SuggestedLine) -> bool:
 		return False
 	if rule.document_kind and rule.document_kind != context.document_kind:
 		return False
-	if rule.vendor_tax_id and _compact(rule.vendor_tax_id) != _compact(context.vendor_tax_id):
+	if rule.vendor_tax_id and tax_key(rule.vendor_tax_id) != tax_key(context.vendor_tax_id):
 		return False
 	if rule.vendor_country and rule.vendor_country != context.vendor_country:
 		return False
@@ -333,7 +334,3 @@ def _load_rules(company: str) -> list:
 		],
 		order_by="priority asc, name asc",
 	)
-
-
-def _compact(value: str | None) -> str:
-	return re.sub(r"[^A-Z0-9]", "", (value or "").upper())

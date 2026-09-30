@@ -118,7 +118,7 @@ def _build_invoice(letter: Any, log: Any, settings: Any, company: str, supplier:
 	# A supplier's credit note lowers what is owed, so it is drafted as ERPNext's
 	# debit note: a return with negative quantities. Amounts are taken as
 	# magnitudes because letters print a credit either way round.
-	if values.document_kind == "Credit Note":
+	if (letter.document_kind or values.document_kind) == "Credit Note":
 		invoice.is_return = 1
 
 	lines = []

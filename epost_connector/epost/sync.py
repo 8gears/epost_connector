@@ -28,6 +28,7 @@ STATUS_RANK = {
 	"New": 0,
 	"Downloaded": 1,
 	"Waiting for Supplier": 2,
+	"Needs Review": 2,
 	"Drafted": 3,
 	"Not Bookable": 3,
 	"Duplicate": 3,

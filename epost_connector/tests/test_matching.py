@@ -111,7 +111,8 @@ class LearningTest(MatchingTestCase):
 
 		self.assertEqual(frappe.db.get_value("Supplier", KLARA, "tax_id"), "CHE-999.888.777 MWST")
 		self.assertEqual(self.find(vendor_name="ePost Klara Services").supplier, KLARA)
-		self.assertEqual(self.find(vendor_name="?", vendor_tax_id="CHE999888777").source, "Tax ID")
+		# The alias carries the tax id too, so it answers before the Supplier's own.
+		self.assertEqual(self.find(vendor_name="?", vendor_tax_id="CHE999888777").supplier, KLARA)
 
 	def test_an_existing_tax_id_is_not_overwritten(self):
 		frappe.db.set_value("Supplier", KLARA, "tax_id", "CHE-111.111.111")

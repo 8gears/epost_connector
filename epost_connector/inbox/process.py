@@ -26,7 +26,7 @@ DOCTYPE = "ePost Letter"
 LOG_DOCTYPE = "ePost Extraction Log"
 
 
-def process_letter(letter: Any, force: bool = False) -> bool:
+def process_letter(letter: Any, force: bool = False, confirmed: bool = False) -> bool:
 	"""Run the pipeline on one letter and save it. True when an extraction exists.
 
 	A letter the pipeline has finished with is left alone unless `force`: a
@@ -51,15 +51,20 @@ def process_letter(letter: Any, force: bool = False) -> bool:
 	if not (log.gross_amount or log.net_amount):
 		return _stop(letter, "Not Bookable", _("No amount was read off the letter."))
 
-	supplier, source = letter.supplier or decided.supplier, "Manual"
-	if not supplier:
+	if letter.supplier:
+		supplier, source, detail = letter.supplier, "Reviewer" if confirmed else "Letter", None
+	elif decided.supplier:
+		supplier, source, detail = decided.supplier, "Rule", decided.rule
+	else:
 		model = settings.flow_model if settings.booking_use_llm else None
 		match = matching.find(letter, log, model=model)
 		if not match.supplier:
 			return _stop(letter, "Waiting for Supplier", _waiting_note(log, match))
-		supplier, source = match.supplier, match.source
-	matching.learn(supplier, log, source="Manual" if source == "Manual" else "Learned")
+		supplier, source, detail = match.supplier, match.source, match.reason
+	if confirmed or source == "LLM":
+		matching.learn(supplier, log, confirmed=confirmed)
 	letter.supplier = supplier
+	letter.flags.supplier_found = _supplier_note(source, detail, log)
 
 	existing = find_duplicate(supplier, log.invoice_number)
 	if existing:
@@ -83,9 +88,9 @@ def process_letter(letter: Any, force: bool = False) -> bool:
 	return True
 
 
-def process_letter_by_name(letter_name: str) -> None:
-	"""Background job: continue a letter after its supplier was chosen."""
-	process_letter(frappe.get_doc(DOCTYPE, letter_name))
+def process_letter_by_name(letter_name: str, confirmed: bool = False) -> None:
+	"""Background job: continue a letter after a reviewer chose its supplier."""
+	process_letter(frappe.get_doc(DOCTYPE, letter_name), confirmed=confirmed)
 	frappe.db.commit()
 
 
@@ -237,6 +242,22 @@ def _stop(letter: Any, status: str, note: str) -> bool:
 	letter.processing_note = note
 	letter.save(ignore_permissions=True)
 	return True
+
+
+def _supplier_note(source: str, detail: str | None, log: Any) -> str:
+	"""How the supplier was found, in words, for the draft's review notes."""
+	name = log.vendor_name or _("the issuer")
+	notes = {
+		"Reviewer": _("Supplier chosen by a reviewer for {0}.").format(name),
+		"Letter": _("Supplier was already set on the letter; {0} was not matched.").format(name),
+		"Rule": _("Supplier set by rule {0}.").format(detail),
+		"Alias": _("Supplier matched by a learned name, VAT id or IBAN for {0}. Check it.").format(name),
+		"Tax ID": _("Supplier matched by VAT id {0}.").format(log.vendor_tax_id),
+		"Name": _("Supplier matched by name: {0}.").format(name),
+		"IBAN": _("Supplier matched by IBAN {0}.").format(log.iban),
+		"LLM": _("Supplier chosen by the model for {0}: {1} Check it.").format(name, detail or ""),
+	}
+	return notes.get(source, "")
 
 
 def _waiting_note(log: Any, match: matching.Match) -> str:

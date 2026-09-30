@@ -89,7 +89,7 @@ def find_supplier(letter: Any) -> str | None:
 
 def _build_invoice(letter: Any, log: Any, settings: Any, company: str, supplier: str):
 	values = log or frappe._dict()
-	notes: list[str] = []
+	notes: list[str] = [letter.flags.supplier_found] if letter.flags.supplier_found else []
 
 	invoice = frappe.new_doc("Purchase Invoice")
 	invoice.company = company

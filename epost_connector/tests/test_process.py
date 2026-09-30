@@ -269,6 +269,7 @@ class ReviewTest(ProcessTestCase):
 		self.other = ensure_supplier("Pipeline Other Supplier AG")
 		frappe.db.set_value("Supplier", self.other, "tax_id", None)
 		frappe.db.delete("Supplier Alias", {"supplier": self.other})
+		frappe.db.delete("Supplier Alias", {"alias_name": ("in", (KNOWN, "Issuer Printed Name"))})
 		frappe.db.commit()
 
 	def drafted(self, **values):
@@ -374,8 +375,13 @@ class ReviewTest(ProcessTestCase):
 		self.assertEqual(
 			frappe.db.get_value("Purchase Invoice", doc.purchase_invoice, "supplier"), doc.supplier
 		)
+		# The review taught the issuer's name to the new supplier; it goes with it.
+		self.assertEqual(
+			frappe.db.get_value("Supplier Alias", {"alias_name": KNOWN}, "supplier"), doc.supplier
+		)
 		frappe.delete_doc("Purchase Invoice", doc.purchase_invoice, force=True, ignore_permissions=True)
 		frappe.db.set_value("ePost Letter", doc.name, "purchase_invoice", None)
+		frappe.db.delete("Supplier Alias", {"supplier": doc.supplier})
 		frappe.delete_doc("Supplier", doc.supplier, force=True, ignore_permissions=True)
 
 	def test_a_submitted_invoice_is_not_touched(self):

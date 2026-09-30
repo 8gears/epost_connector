@@ -105,13 +105,15 @@ class ProcessTest(ProcessTestCase):
 				doc.save(ignore_permissions=True)
 			self.assertEqual(enqueue.call_args.kwargs["letter_name"], doc.name)
 
-			process_letter_by_name(doc.name)
+			process_letter_by_name(doc.name, confirmed=True)
 
 		doc = self.letter_doc("inbox-1")
 		self.assertEqual(doc.status, "Drafted")
 		self.assertTrue(doc.purchase_invoice)
 		alias = frappe.db.get_value("Supplier Alias", {"supplier": self.supplier}, "alias_name")
 		self.assertEqual(alias, "Brand New Vendor GmbH", "the mapping is remembered")
+		notes = frappe.db.get_value("Purchase Invoice", doc.purchase_invoice, "review_notes")
+		self.assertIn("chosen by a reviewer", notes)
 
 	def test_an_invoice_already_recorded_is_a_duplicate_not_a_second_draft(self):
 		with _returning(_invoice(), same_number=True):
@@ -166,3 +168,18 @@ class ProcessTest(ProcessTestCase):
 		self.assertEqual(doc.status, "Not Bookable")
 		self.assertIn("fiscal year", doc.processing_note)
 		self.assertFalse(doc.purchase_invoice)
+
+	def test_a_supplier_already_on_the_letter_is_used_but_not_learned(self):
+		"""A value left on the letter is no reviewer's decision; it must not spread."""
+		other = ensure_supplier("Pipeline Other Supplier AG")
+		with _returning(_invoice(vendor_name="Someone Unrelated AG")):
+			sync_letters()
+			doc = self.letter_doc("inbox-1")
+			doc.flags.reprocess = True
+			doc.status = "Downloaded"
+			doc.supplier = other
+			doc.purchase_invoice = None
+			doc.save(ignore_permissions=True)
+			process_letter(doc, force=True)
+
+		self.assertEqual(frappe.db.count("Supplier Alias", {"alias_name": "Someone Unrelated AG"}), 0)

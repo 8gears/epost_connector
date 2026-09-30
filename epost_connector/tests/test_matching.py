@@ -31,6 +31,7 @@ class MatchingTestCase(ePostSiteTestCase):
 
 	def cleanup(self) -> None:
 		frappe.db.delete("Supplier Alias", {"supplier": ("in", ALL)})
+		frappe.db.delete("Supplier Alias", {"alias_name": "Shared Brand"})
 		frappe.db.delete("ePost Extraction Log", {"kind": "Supplier", "letter": ("is", "not set")})
 		for name in ALL:
 			frappe.db.set_value("Supplier", name, "tax_id", None)
@@ -107,7 +108,7 @@ class LearningTest(MatchingTestCase):
 	def test_a_confirmed_match_teaches_the_tax_id_and_the_name(self):
 		values = frappe._dict(vendor_name="ePost Klara Services", vendor_tax_id="CHE-999.888.777 MWST")
 
-		matching.learn(KLARA, values)
+		matching.learn(KLARA, values, confirmed=True)
 
 		self.assertEqual(frappe.db.get_value("Supplier", KLARA, "tax_id"), "CHE-999.888.777 MWST")
 		self.assertEqual(self.find(vendor_name="ePost Klara Services").supplier, KLARA)
@@ -117,11 +118,47 @@ class LearningTest(MatchingTestCase):
 	def test_an_existing_tax_id_is_not_overwritten(self):
 		frappe.db.set_value("Supplier", KLARA, "tax_id", "CHE-111.111.111")
 
-		matching.learn(KLARA, frappe._dict(vendor_name=KLARA, vendor_tax_id="CHE-999.999.999"))
+		matching.learn(
+			KLARA, frappe._dict(vendor_name=KLARA, vendor_tax_id="CHE-999.999.999"), confirmed=True
+		)
 
 		self.assertEqual(frappe.db.get_value("Supplier", KLARA, "tax_id"), "CHE-111.111.111")
 
 	def test_the_suppliers_own_name_is_not_stored_as_an_alias(self):
-		matching.learn(KLARA, frappe._dict(vendor_name="KLARA Business AG"))
+		matching.learn(KLARA, frappe._dict(vendor_name="KLARA Business AG"), confirmed=True)
 
 		self.assertEqual(frappe.db.count("Supplier Alias", {"supplier": KLARA}), 0)
+
+	def test_a_model_pick_teaches_the_name_but_never_a_tax_id(self):
+		"""A wrong guess with a tax id would make every later letter match it exactly."""
+		matching.learn(
+			KLARA,
+			frappe._dict(vendor_name="Klara Scan Service", vendor_tax_id="CHE-555.555.555"),
+			confirmed=False,
+		)
+
+		self.assertFalse(frappe.db.get_value("Supplier", KLARA, "tax_id"))
+		alias = frappe.get_all(
+			"Supplier Alias", filters={"supplier": KLARA}, fields=["alias_name", "tax_id", "source"]
+		)
+		self.assertEqual(
+			[(a.alias_name, a.tax_id, a.source) for a in alias], [("Klara Scan Service", None, "Learned")]
+		)
+
+	def test_a_name_already_mapped_to_another_supplier_is_not_remapped(self):
+		matching.learn(CARD, frappe._dict(vendor_name="Shared Brand"), confirmed=True)
+
+		matching.learn(KLARA, frappe._dict(vendor_name="Shared Brand"), confirmed=True)
+
+		self.assertEqual(
+			frappe.get_all("Supplier Alias", filters={"alias_name": "Shared Brand"}, pluck="supplier"), [CARD]
+		)
+
+	def test_a_tax_id_another_supplier_holds_is_not_copied(self):
+		frappe.db.set_value("Supplier", CARD, "tax_id", "CHE-444.444.444")
+
+		matching.learn(
+			KLARA, frappe._dict(vendor_name="x", vendor_tax_id="CHE-444.444.444 MWST"), confirmed=True
+		)
+
+		self.assertFalse(frappe.db.get_value("Supplier", KLARA, "tax_id"))

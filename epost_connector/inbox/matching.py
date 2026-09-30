@@ -89,24 +89,33 @@ def find_supplier(letter: Any) -> str | None:
 	return _by_name(names).supplier
 
 
-def learn(supplier: str, values: Any, source: str = "Learned") -> None:
-	"""Remember how `supplier` appeared, so the next letter matches exactly.
+def learn(supplier: str, values: Any, confirmed: bool) -> None:
+	"""Remember how `supplier` appeared, so the next letter matches without a guess.
 
-	The tax id goes onto the Supplier only when it has none: an existing one was
-	set by a human or an earlier match and is not overwritten by a model's read.
+	What is learned depends on who decided. A human who mapped or created the
+	supplier (`confirmed`) vouches for the whole issuer: its tax id, name and
+	IBAN are learned. A model's pick vouches for the name only. A tax id learned
+	from a guess would make every later letter carrying it match exactly, and a
+	wrong guess would then spread silently, so a model never teaches one.
+
+	Nothing is learned that already points at another supplier: a conflict is
+	left for a human rather than resolved by whoever came last.
 	"""
-	tax_id = getattr(values, "vendor_tax_id", None)
-	iban = getattr(values, "iban", None)
+	tax_id = getattr(values, "vendor_tax_id", None) if confirmed else None
+	iban = getattr(values, "iban", None) if confirmed else None
 	name = getattr(values, "vendor_name", None)
 
 	if tax_id and not frappe.db.get_value("Supplier", supplier, "tax_id"):
-		frappe.db.set_value("Supplier", supplier, "tax_id", tax_id, update_modified=False)
+		key = tax_key(tax_id)
+		taken = [row.name for row in _suppliers() if row.tax_id and tax_key(row.tax_id) == key]
+		if not taken:
+			frappe.db.set_value("Supplier", supplier, "tax_id", tax_id, update_modified=False)
 
 	supplier_name = frappe.db.get_value("Supplier", supplier, "supplier_name") or supplier
 	if not name or normalise(name) == normalise(supplier_name):
 		return
-	existing = frappe.get_all(ALIAS_DOCTYPE, filters={"supplier": supplier}, fields=["alias_name"])
-	if any(normalise(row.alias_name) == normalise(name) for row in existing):
+	aliases = frappe.get_all(ALIAS_DOCTYPE, fields=["alias_name", "supplier"])
+	if any(normalise(row.alias_name) == normalise(name) for row in aliases):
 		return
 	frappe.get_doc(
 		{
@@ -115,7 +124,7 @@ def learn(supplier: str, values: Any, source: str = "Learned") -> None:
 			"supplier": supplier,
 			"tax_id": tax_id,
 			"iban": iban,
-			"source": source,
+			"source": "Manual" if confirmed else "Learned",
 		}
 	).insert(ignore_permissions=True)
 

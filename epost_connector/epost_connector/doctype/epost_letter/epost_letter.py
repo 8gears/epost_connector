@@ -56,6 +56,7 @@ class ePostLetter(Document):
 			queue="long",
 			enqueue_after_commit=True,
 			letter_name=self.name,
+			confirmed=True,
 		)
 
 

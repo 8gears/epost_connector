@@ -65,6 +65,15 @@ def process_letter(letter: Any, force: bool = False) -> bool:
 	if existing:
 		return _stop(letter, "Duplicate", _("Already recorded as Purchase Invoice {0}.").format(existing))
 
+	if log.invoice_date and not in_fiscal_year(log.invoice_date, company):
+		return _stop(
+			letter,
+			"Not Bookable",
+			_(
+				"The invoice date {0} is in no fiscal year of {1}; it belongs to the books kept before."
+			).format(log.invoice_date, company),
+		)
+
 	letter.processing_note = None
 	letter.save(ignore_permissions=True)
 
@@ -207,6 +216,12 @@ def vat_groups(log: Any, extras: dict, fallback: str | None = None) -> list[VatG
 	net = flt(log.net_amount) or (flt(gross) - flt(vat))
 	rate = round(flt(vat) / net * 100, 1) if net and vat is not None and gross else None
 	return [VatGroup(net=net, rate=rate, description=extras.get("summary") or fallback)]
+
+
+def in_fiscal_year(date, company: str) -> bool:
+	from erpnext.accounts.utils import get_fiscal_year
+
+	return bool(get_fiscal_year(date, company=company, boolean=True))
 
 
 def find_duplicate(supplier: str, bill_no: str | None) -> str | None:

@@ -108,6 +108,10 @@ def _build_invoice(letter: Any, log: Any, settings: Any, company: str, supplier:
 	posting_date = getdate(invoice.posting_date or today())
 	if values.due_date and getdate(values.due_date) >= posting_date:
 		invoice.due_date = values.due_date
+		# The due date printed on the letter is what the supplier asks for. The
+		# supplier's default payment terms would otherwise cap it and refuse the
+		# draft ("Due Date cannot be after …").
+		invoice.ignore_default_payment_terms_template = 1
 
 	notes += _set_currency(invoice, values, company, supplier, posting_date)
 

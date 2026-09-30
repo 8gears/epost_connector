@@ -22,7 +22,7 @@ from epost_connector.tests import mock_epost
 from epost_connector.tests.mock_epost import COMPANY_ID, TENANT_ID, MockePost
 
 #: Doctypes this app owns outright. Nothing outside them links to their rows.
-OWNED_DOCTYPES = ("ePost Letter", "ePost Sync Log")
+OWNED_DOCTYPES = ("ePost Letter", "ePost Sync Log", "ePost Extraction Log")
 
 
 def purge() -> None:

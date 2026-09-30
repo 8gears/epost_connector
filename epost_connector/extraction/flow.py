@@ -51,6 +51,9 @@ SCHEMA = {
 		"vendor_name": _TEXT,
 		"vendor_tax_id": _TEXT,
 		"vendor_country": _TEXT,
+		"vendor_address": _TEXT,
+		"service_period_from": _TEXT,
+		"service_period_to": _TEXT,
 		"iban": _TEXT,
 		"qr_reference": _TEXT,
 		"invoice_number": _TEXT,
@@ -90,6 +93,8 @@ INSTRUCTIONS = """You read letters that arrive in a company's digital letterbox 
 
 - document_kind: what the letter is.
 - vendor_*: the party that issued the letter, not the recipient. vendor_country is the English country name of the vendor's address, e.g. "Switzerland", "Germany", "United States". vendor_tax_id is its VAT or UID number exactly as printed, e.g. "CHE-123.456.789 MWST".
+- vendor_address: the vendor's postal address as printed, lines separated by newlines.
+- service_period_from/to: the period the invoice covers, if it states one.
 - Dates as YYYY-MM-DD. Currency as an ISO 4217 code.
 - Amounts as plain numbers in the invoice currency. net_amount excludes VAT, gross_amount is the total payable.
 - vat_breakdown: one row per VAT rate the invoice shows, in percent. A foreign invoice that charges no VAT has one row with rate 0.
@@ -158,6 +163,9 @@ def _to_result(answer: dict) -> ExtractionResult:
 		document_kind=kind if kind in DOCUMENT_KINDS else None,
 		vendor_name=_text(answer.get("vendor_name")),
 		vendor_tax_id=_text(answer.get("vendor_tax_id")),
+		vendor_address=_text(answer.get("vendor_address")),
+		service_period_from=_text(answer.get("service_period_from")),
+		service_period_to=_text(answer.get("service_period_to")),
 		vendor_country=country if country and frappe.db.exists("Country", country) else None,
 		iban=_text(answer.get("iban")),
 		qr_reference=_text(answer.get("qr_reference")),

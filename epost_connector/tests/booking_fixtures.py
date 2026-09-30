@@ -107,7 +107,7 @@ def purge_booked(suppliers: list[str]) -> None:
 		# under that name would then appear to have posted.
 		for doctype in ("GL Entry", "Payment Ledger Entry"):
 			frappe.db.delete(doctype, {"voucher_type": "Purchase Invoice", "voucher_no": name})
-	frappe.db.delete("ePost Booking Rule", {"company": TEST_COMPANY})
+	frappe.db.delete("ePost Rule", {"company": TEST_COMPANY})
 	frappe.db.commit()
 
 

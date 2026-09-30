@@ -179,14 +179,14 @@
    "fieldname": "booking_section",
    "fieldtype": "Section Break",
    "label": "Booking Suggestion",
-   "description": "How a draft invoice's accounts and VAT templates are suggested: ePost Booking Rules, then the supplier's own past invoices, then optionally the Flow model."
+   "description": "How a letter becomes a draft invoice: ePost Rules, the supplier's own past invoices, then optionally the Flow model."
   },
   {
    "default": "0",
-   "description": "Ask the Flow model about lines that rules and history leave without an account. It may only choose accounts and templates already used on submitted Purchase Invoices.",
+   "description": "Ask the Flow model when the exact checks find no supplier (it may only pick an existing one), and about lines that rules and history leave without an account (only accounts and templates already used on submitted Purchase Invoices).",
    "fieldname": "booking_use_llm",
    "fieldtype": "Check",
-   "label": "Use Flow Model for Unknown Suppliers"
+   "label": "Use Flow Model for Suppliers and Bookings"
   },
   {
    "fieldname": "booking_column",
@@ -203,7 +203,7 @@
  "index_web_pages_for_search": 0,
  "issingle": 1,
  "links": [],
- "modified": "2026-09-30 09:00:00.000000",
+ "modified": "2026-09-30 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "ePost Connector",
  "name": "ePost Settings",

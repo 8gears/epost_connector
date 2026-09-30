@@ -2,7 +2,7 @@
 
 Three sources, asked in a fixed order, each filling only what is still open:
 
-1. `ePost Booking Rule` rows applied *before* history. For what a human wants
+1. `ePost Rule` rows applied *before* history. For what a human wants
    decided explicitly, whatever the history says.
 2. The supplier's own history (`history.py`), when one combination clearly wins.
 3. Rules applied *after* history. Defaults for suppliers with no history, such
@@ -25,7 +25,7 @@ from frappe.utils import flt, nowdate
 
 from epost_connector.booking import history
 
-RULE_DOCTYPE = "ePost Booking Rule"
+RULE_DOCTYPE = "ePost Rule"
 BEFORE_HISTORY = "Before history"
 AFTER_HISTORY = "After history"
 VAT_CHARGED = "Charged"
@@ -58,6 +58,7 @@ class BookingContext:
 	vendor_name: str | None = None
 	vendor_tax_id: str | None = None
 	vendor_country: str | None = None
+	document_kind: str | None = None
 	text: str | None = None
 	groups: list[VatGroup] = field(default_factory=list)
 
@@ -138,6 +139,34 @@ def suggest(
 		line.confidence = round(min(found), 4) if found and line.expense_account else 0.0
 
 	return BookingSuggestion(lines=lines, taxes_and_charges=_taxes_template(lines, mixed_template))
+
+
+@dataclass
+class Route:
+	status: str | None = None
+	supplier: str | None = None
+	rule: str | None = None
+
+
+def route(context: BookingContext) -> Route:
+	"""What the rules decide about the letter as a whole, before any line is booked.
+
+	The first matching rule with `set_status` stops the letter; the first with
+	`set_supplier` names its supplier. Rules without either are booking rules and
+	are left to `suggest`.
+	"""
+	decided = Route()
+	letter_level = SuggestedLine(net=0.0)
+	for rule in _load_rules(context.company):
+		if not (rule.set_status or rule.set_supplier) or not _rule_matches(rule, context, letter_level):
+			continue
+		if rule.set_status and not decided.status:
+			decided.status, decided.rule = rule.set_status, rule.name
+			return decided
+		if rule.set_supplier and not decided.supplier:
+			decided.supplier = rule.set_supplier
+			decided.rule = decided.rule or rule.name
+	return decided
 
 
 def _apply_rules(
@@ -232,6 +261,8 @@ def _apply_history_template(
 def _rule_matches(rule, context: BookingContext, line: SuggestedLine) -> bool:
 	if rule.supplier and rule.supplier != context.supplier:
 		return False
+	if rule.document_kind and rule.document_kind != context.document_kind:
+		return False
 	if rule.vendor_tax_id and _compact(rule.vendor_tax_id) != _compact(context.vendor_tax_id):
 		return False
 	if rule.vendor_country and rule.vendor_country != context.vendor_country:
@@ -291,6 +322,9 @@ def _load_rules(company: str) -> list:
 			"foreign_only",
 			"domestic_only",
 			"vat_on_invoice",
+			"document_kind",
+			"set_status",
+			"set_supplier",
 			"account_prefix",
 			"keyword",
 			"expense_account",

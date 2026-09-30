@@ -33,6 +33,10 @@ class ExtractionResult:
 	#: One of `DOCUMENT_KINDS`, or None when the extractor does not classify.
 	document_kind: str | None = None
 	vendor_tax_id: str | None = None
+	#: The vendor's postal address as printed, one line per address line.
+	vendor_address: str | None = None
+	service_period_from: date | str | None = None
+	service_period_to: date | str | None = None
 	#: An ERPNext Country name, e.g. "Switzerland".
 	vendor_country: str | None = None
 	#: One entry per VAT rate the invoice shows: {"rate": 8.1, "net": 100.0, "vat": 8.1}.

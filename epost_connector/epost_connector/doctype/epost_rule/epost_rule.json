@@ -30,6 +30,7 @@
   "column_break_route",
   "expense_account",
   "item_tax_template",
+  "vat_needs_review",
   "column_break_target",
   "cost_center",
   "notes"
@@ -180,6 +181,13 @@
    "options": "Item Tax Template"
   },
   {
+   "fieldname": "vat_needs_review",
+   "fieldtype": "Check",
+   "label": "VAT Template for Review",
+   "depends_on": "eval:!doc.item_tax_template",
+   "description": "Leave the line's VAT template empty for a person to choose. Neither a later rule, the history nor the model fills it. For bills where reverse charge must not be guessed: imported goods, exempt services, a Swiss supplier without VAT. Use Before history to win over how the supplier was booked."
+  },
+  {
    "fieldname": "column_break_target",
    "fieldtype": "Column Break"
   },
@@ -197,7 +205,7 @@
  ],
  "index_web_pages_for_search": 0,
  "links": [],
- "modified": "2026-09-30 12:00:00.000000",
+ "modified": "2026-10-17 16:00:00.000000",
  "modified_by": "Administrator",
  "module": "ePost Connector",
  "name": "ePost Rule",

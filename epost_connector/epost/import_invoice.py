@@ -240,6 +240,12 @@ def _suggested_item(letter: Any, values: Any, settings: Any, company: str, line)
 def _line_notes(lines: list) -> list[str]:
 	notes = []
 	for line in lines:
+		if line.review_rule:
+			notes.append(
+				_("{0}: VAT template left empty for review by rule {1}.").format(
+					_money(line.net), line.review_rule
+				)
+			)
 		if line.account_source == "None":
 			notes.append(
 				_("{0}: no account could be suggested; the default was used.").format(_money(line.net))

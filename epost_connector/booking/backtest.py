@@ -6,7 +6,10 @@ booked. That makes the result a fair estimate of how the suggestion would have
 done at the time, not a measure of how well it remembers the answer.
 
 The VAT groups come from the booked lines themselves, so this measures the
-booking step alone, as if extraction had read every invoice perfectly.
+booking step alone, as if extraction had read every invoice perfectly. The
+vendor country is the one extraction read off the letter the invoice was drafted
+from, as in a live suggestion; the Supplier's country is only the fallback,
+because a supplier record can carry the wrong one.
 
     bench --site <site> execute epost_connector.booking.backtest.run \
         --kwargs '{"company": "<company>", "exclude_invoices": ["..."]}'
@@ -55,6 +58,7 @@ def run(
 		order_by="posting_date asc, name asc",
 	)
 	countries = dict(frappe.get_all("Supplier", fields=["name", "country"], as_list=True))
+	read_countries = _letter_countries()
 
 	totals = _Tally()
 	by_source: dict[str, _Tally] = defaultdict(_Tally)
@@ -77,7 +81,7 @@ def run(
 			company=company,
 			supplier=invoice.supplier,
 			vendor_name=invoice.supplier,
-			vendor_country=countries.get(invoice.supplier),
+			vendor_country=read_countries.get(invoice.name) or countries.get(invoice.supplier),
 			text=invoice.remarks,
 			groups=_groups(lines),
 		)
@@ -173,6 +177,25 @@ class _Tally:
 			"account_accuracy_by_amount": ratio(self.account_weight, self.weight),
 			"template_accuracy_by_amount": ratio(self.template_weight, self.weight),
 		}
+
+
+def _letter_countries() -> dict[str, str]:
+	"""Purchase Invoice -> the vendor country extraction read off its letter."""
+	if not frappe.db.table_exists("ePost Letter"):
+		return {}
+	letter = frappe.qb.DocType("ePost Letter")
+	log = frappe.qb.DocType("ePost Extraction Log")
+	rows = (
+		frappe.qb.from_(letter)
+		.join(log)
+		.on(log.name == letter.extraction_log)
+		.select(letter.purchase_invoice, log.vendor_country)
+		.where(
+			letter.purchase_invoice.isnotnull() & log.vendor_country.isnotnull() & (log.vendor_country != "")
+		)
+		.run()
+	)
+	return dict(rows)
 
 
 def _booked_lines(invoice: str) -> list:

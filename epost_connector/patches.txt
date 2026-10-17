@@ -1,3 +1,7 @@
 [pre_model_sync]
 
 [post_model_sync]
+epost_connector.patches.move_letter_extractions_to_logs
+epost_connector.patches.convert_booking_rules
+epost_connector.patches.map_letter_statuses
+epost_connector.patches.review_pipeline_stops

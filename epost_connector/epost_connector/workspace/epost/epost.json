@@ -1,7 +1,7 @@
 {
  "app": "epost_connector",
  "charts": [],
- "content": "[{\"id\": \"epost_header\", \"type\": \"header\", \"data\": {\"text\": \"<span class=\\\"h4\\\"><b>ePost Letterbox</b></span>\", \"col\": 12}}, {\"id\": \"epost_sc_new\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"New Letters\", \"col\": 3}}, {\"id\": \"epost_sc_import\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"To Import\", \"col\": 3}}, {\"id\": \"epost_sc_errors\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Sync Errors\", \"col\": 3}}, {\"id\": \"epost_sc_all\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"All Letters\", \"col\": 3}}, {\"id\": \"epost_sc_settings\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"ePost Settings\", \"col\": 3}}, {\"id\": \"epost_spacer\", \"type\": \"spacer\", \"data\": {\"col\": 12}}, {\"id\": \"epost_ql_recent\", \"type\": \"quick_list\", \"data\": {\"quick_list_name\": \"Recent Letters\", \"col\": 4}}, {\"id\": \"epost_ql_import\", \"type\": \"quick_list\", \"data\": {\"quick_list_name\": \"Ready to Import\", \"col\": 4}}, {\"id\": \"epost_ql_syncs\", \"type\": \"quick_list\", \"data\": {\"quick_list_name\": \"Recent Syncs\", \"col\": 4}}, {\"id\": \"epost_spacer_2\", \"type\": \"spacer\", \"data\": {\"col\": 12}}, {\"id\": \"epost_card\", \"type\": \"card\", \"data\": {\"card_name\": \"ePost Connector\", \"col\": 4}}]",
+ "content": "[{\"id\": \"epost_header\", \"type\": \"header\", \"data\": {\"text\": \"<span class=\\\"h4\\\"><b>ePost Letterbox</b></span>\", \"col\": 12}}, {\"id\": \"epost_sc_new\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Waiting for Supplier\", \"col\": 3}}, {\"id\": \"epost_sc_import\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Not Processed\", \"col\": 3}}, {\"id\": \"epost_sc_errors\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Sync Errors\", \"col\": 3}}, {\"id\": \"epost_sc_all\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"All Letters\", \"col\": 3}}, {\"id\": \"epost_sc_drafts\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Draft Invoices\", \"col\": 3}}, {\"id\": \"epost_sc_rules\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Rules\", \"col\": 3}}, {\"id\": \"epost_sc_settings\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"ePost Settings\", \"col\": 3}}, {\"id\": \"epost_spacer\", \"type\": \"spacer\", \"data\": {\"col\": 12}}, {\"id\": \"epost_ql_recent\", \"type\": \"quick_list\", \"data\": {\"quick_list_name\": \"Recent Letters\", \"col\": 4}}, {\"id\": \"epost_ql_import\", \"type\": \"quick_list\", \"data\": {\"quick_list_name\": \"Waiting for Supplier\", \"col\": 4}}, {\"id\": \"epost_ql_syncs\", \"type\": \"quick_list\", \"data\": {\"quick_list_name\": \"Recent Syncs\", \"col\": 4}}, {\"id\": \"epost_spacer_2\", \"type\": \"spacer\", \"data\": {\"col\": 12}}, {\"id\": \"epost_card\", \"type\": \"card\", \"data\": {\"card_name\": \"ePost Connector\", \"col\": 4}}]",
  "creation": "2026-09-01 00:00:00",
  "custom_blocks": [],
  "docstatus": 0,
@@ -18,7 +18,7 @@
    "hidden": 0,
    "is_query_report": 0,
    "label": "ePost Connector",
-   "link_count": 3,
+   "link_count": 6,
    "onboard": 0,
    "type": "Card Break"
   },
@@ -54,9 +54,42 @@
    "link_type": "DocType",
    "onboard": 0,
    "type": "Link"
+  },
+  {
+   "dependencies": "",
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "ePost Rule",
+   "link_count": 0,
+   "link_to": "ePost Rule",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "dependencies": "",
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Supplier Alias",
+   "link_count": 0,
+   "link_to": "Supplier Alias",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "dependencies": "",
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "ePost Extraction Log",
+   "link_count": 0,
+   "link_to": "ePost Extraction Log",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
   }
  ],
- "modified": "2026-09-02 09:15:00",
+ "modified": "2026-09-30 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "ePost Connector",
  "name": "ePost",
@@ -72,8 +105,8 @@
   },
   {
    "document_type": "ePost Letter",
-   "label": "Ready to Import",
-   "quick_list_filter": "[[\"ePost Letter\",\"status\",\"in\",[\"Downloaded\",\"Analyzed\"]]]"
+   "label": "Waiting for Supplier",
+   "quick_list_filter": "[[\"ePost Letter\", \"status\", \"=\", \"Waiting for Supplier\"]]"
   },
   {
    "document_type": "ePost Sync Log",
@@ -87,17 +120,17 @@
   {
    "color": "Orange",
    "doc_view": "List",
-   "label": "New Letters",
+   "label": "Waiting for Supplier",
    "link_to": "ePost Letter",
-   "stats_filter": "{\"status\":\"New\"}",
+   "stats_filter": "{\"status\": [\"=\", \"Waiting for Supplier\"]}",
    "type": "DocType"
   },
   {
    "color": "Blue",
    "doc_view": "List",
-   "label": "To Import",
+   "label": "Not Processed",
    "link_to": "ePost Letter",
-   "stats_filter": "{\"status\":[\"in\",[\"Downloaded\",\"Analyzed\"]]}",
+   "stats_filter": "{\"status\": [\"in\", [\"New\", \"Downloaded\"]]}",
    "type": "DocType"
   },
   {
@@ -119,6 +152,21 @@
    "color": "Grey",
    "label": "ePost Settings",
    "link_to": "ePost Settings",
+   "type": "DocType"
+  },
+  {
+   "color": "Green",
+   "doc_view": "List",
+   "label": "Draft Invoices",
+   "link_to": "Purchase Invoice",
+   "stats_filter": "{\"docstatus\": [\"=\", 0], \"epost_letter\": [\"is\", \"set\"]}",
+   "type": "DocType"
+  },
+  {
+   "color": "Grey",
+   "doc_view": "List",
+   "label": "Rules",
+   "link_to": "ePost Rule",
    "type": "DocType"
   }
  ],

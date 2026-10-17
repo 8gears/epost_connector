@@ -19,14 +19,22 @@ from frappe.utils.data import convert_utc_to_system_timezone
 
 from epost_connector.epost.client import ePostClient
 from epost_connector.epost.exceptions import ePostError, ePostPaginationLimit
-from epost_connector.extraction.pipeline import analyze_letter
 
 DOCTYPE = "ePost Letter"
 
-#: Status only ever moves forward. Imported/Ignored are terminal: the sync
-#: refreshes their ePost metadata but does not touch their pipeline state.
-STATUS_RANK = {"New": 0, "Downloaded": 1, "Analyzed": 2, "Imported": 3, "Ignored": 3}
-TERMINAL_STATUSES = {"Imported", "Ignored"}
+#: Status only ever moves forward. The terminal ones are left alone by the
+#: sync: it refreshes their ePost metadata but not their pipeline state.
+STATUS_RANK = {
+	"New": 0,
+	"Downloaded": 1,
+	"Waiting for Supplier": 2,
+	"Needs Review": 2,
+	"Drafted": 3,
+	"Not Bookable": 3,
+	"Duplicate": 3,
+	"Ignored": 3,
+}
+TERMINAL_STATUSES = {"Drafted", "Not Bookable", "Duplicate", "Ignored"}
 
 
 def scheduled_sync() -> dict | None:
@@ -269,7 +277,9 @@ class LetterSync:
 			)
 
 	def _analyze(self, letter) -> None:
-		if analyze_letter(letter):
+		from epost_connector.inbox.process import process_letter
+
+		if letter.status == "Downloaded" and process_letter(letter):
 			self.analyzed += 1
 
 	@staticmethod

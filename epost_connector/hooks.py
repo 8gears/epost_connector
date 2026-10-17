@@ -8,6 +8,11 @@ app_license = "mit"
 # Purchase Invoice creation and the Company/expense-account defaults come from ERPNext.
 required_apps = ["erpnext"]
 
+doctype_js = {"Purchase Invoice": "public/js/purchase_invoice.js"}
+
+after_install = "epost_connector.inbox.custom_fields.install"
+after_migrate = "epost_connector.inbox.custom_fields.install"
+
 scheduler_events = {
 	"hourly_long": [
 		"epost_connector.epost.sync.scheduled_sync",

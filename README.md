@@ -43,18 +43,32 @@ epost/client.py ......... auth (X-API-KEY, or password + refresh grant),
 epost/sync.py ........... upsert ePost Letter, download PDF -> private File,
 	│                     write one ePost Sync Log per run.  Hourly, and on demand.
 	▼
-extraction/ ............. LetterExtractor interface + registry.
-	│                     Ships NoopExtractor only; no LLM implementation.
+extraction/ ............. LetterExtractor interface + registry. NoopExtractor
+	│                     (default) or FlowExtractor. Writes an ePost Extraction Log.
+	▼
+inbox/process.py ........ ePost Rule routing -> supplier match (inbox/matching.py)
+	│                     -> duplicate check.
+	▼
+booking/ ................ account, VAT template, cost center: rules, supplier
+	│                     history, then a Flow model.
 	▼
 epost/import_invoice.py . draft Purchase Invoice, never submitted.
 ```
 
-Pipeline status on `ePost Letter`, which only ever moves forward:
+The **ePost Letter stays what ePost delivered.** Nothing extracted or suggested
+is written onto it: extracted values live in an **ePost Extraction Log**
+(System Manager only, with the raw model answer, checks and tokens), and the
+result of processing is a draft Purchase Invoice, reviewed in ERPNext's own
+form. The letter carries only its pipeline state:
 
-`New` → `Downloaded` → `Analyzed` → `Imported` / `Ignored`
+`New` → `Downloaded` → `Waiting for Supplier` or `Needs Review` → `Drafted`, or
+`Not Bookable`, `Duplicate`, `Ignored`.
 
-`Imported` and `Ignored` are terminal. The sync still refreshes their ePost
-metadata but never touches their pipeline state, supplier, or extraction fields.
+`Drafted`, `Not Bookable`, `Duplicate` and `Ignored` are terminal. The sync
+still refreshes their ePost metadata but never touches their pipeline state.
+**Process again** on the letter starts one over from extraction. The pipeline
+never sets `Not Bookable` itself: what the model read may be wrong, so only a
+person confirms it.
 
 ### The sync reads the inbox, and the inbox is the whole letterbox
 
@@ -180,8 +194,8 @@ waiting for a human; **Recent Syncs** is the last few runs.
 
 ![The ePost Letter list](docs/list-view.png)
 
-Status is a coloured indicator: New is orange, Downloaded blue, Analyzed purple,
-Imported green, Ignored grey. A letter whose last sync failed shows a red **Sync
+Status is a coloured indicator: New, Waiting for Supplier and Needs Review are orange,
+Downloaded blue, Drafted green, Not Bookable, Duplicate and Ignored grey. A letter whose last sync failed shows a red **Sync
 Error** regardless of its status, because that is the one that needs a person.
 
 `Received At` is shown as an age; hover for the timestamp. `Document Types`
@@ -190,17 +204,11 @@ carries the categories ePost put on the letter, lower-cased so that `Invoice`,
 so "show me the invoices" is one click. Every row with a PDF gets a **PDF**
 button that opens the scan without leaving the list.
 
-There is deliberately **no `Amount` column**. The only extractor this app ships
-is the no-op (see *Extraction* below), so in the shipped configuration every
-letter's amount is `0` — and a Currency column cannot be empty, so those zeroes
-render with a currency symbol taken from the site default. That is a
-denomination nobody read off the document, on every row. Add the column under
-**List Settings** once a real extractor is filling the field.
-
-**Quick Filters** holds the views worth having: New Letters, To Import, Sync
-Errors, Imported, Everything. The default view hides `Ignored` letters, and
-*Everything* is how you get them back. Selecting letters and choosing **Mark as
-Ignored** from the list Actions menu ignores them in bulk.
+**Quick Filters** holds the views worth having: To Review (Waiting for Supplier
+and Needs Review), Not Processed, Drafted, Not Bookable, Sync Errors,
+Everything. The default view hides `Ignored` letters, and *Everything* is how
+you get them back. Selecting letters and choosing **Mark as Not Bookable** or
+**Mark as Ignored** from the list Actions menu does it in bulk.
 
 ### A letter
 
@@ -236,39 +244,144 @@ last run was with its outcome and counts, read from the newest `ePost Sync Log`.
 queues a run and then links to the log it opens, or tells you the job never
 started, which is what a stopped background worker looks like from the browser.
 
-### The Purchase Invoice is a starting point
+### Processing a letter
 
-It is created as a draft and **never submitted**. Supplier comes from the dialog,
-else the letter's `Supplier`, else a match of `vendor_name` / `sender_name`
-against existing Suppliers (exact first, then normalised, ignoring case,
-punctuation and legal-form suffixes). An ambiguous match is treated as no match
-so you are asked rather than handed a guess.
+`inbox/process.py` takes a downloaded letter as far as it can and stops with a
+status and a plain-language **Note** when it cannot go further:
 
-One item line is created, using `Default Item` if set, otherwise a non-stock line
-carrying the letter title. `bill_no`, `bill_date` and `due_date` are filled from
-extraction fields when present, and the letter's PDF is linked to the invoice.
-Amounts are `0` until an extractor fills them in.
+1. **Extract** with the configured extractor into an Extraction Log. Without an
+   extractor, or when nothing is read, the letter stays `Downloaded`.
+2. **Route** with **ePost Rule** rows that set a status or a supplier, matched
+   on document kind, supplier, VAT id, keyword, country. For example: kind
+   `Reminder` → not bookable. A rule's stop, a letter with no amount and an
+   invoice date outside every fiscal year all end in `Needs Review`, with the
+   reason in the Note. So does a doubtful document type, found by plain checks:
+   a letter read as not an invoice that has an invoice number, a total and VAT;
+   a credit note whose text never says credit (Gutschrift, avoir, nota di
+   credito); an invoice whose text does.
+3. **Supplier**, in this order, first hit wins:
+   - a **Supplier Alias** (a name, VAT id or IBAN learned from an earlier letter);
+   - the Supplier's **Tax ID**, compared without spaces, dots and dashes;
+   - the **name**, ignoring case, accents, punctuation, legal-form suffixes and
+     word order; only a unique hit counts;
+   - the **IBAN** of a supplier's Bank Account;
+   - with *Use Flow Model for Suppliers and Bookings* on, the **model**, shown
+     the issuer as read and the existing suppliers, which must answer with one
+     of them or none. It is told that a different VAT id means a different
+     legal entity.
 
-A foreign currency is *not* applied to the draft, because a conversion rate is a
-decision only a human can make; the detected currency is noted in `remarks`
-instead.
+   No match: the letter is `Waiting for Supplier`, and its Note names the
+   closest suppliers. Every confirmed supplier learns the letter's VAT id
+   (only when it has none) and the name as printed, as a Supplier Alias.
+4. **Duplicate**: an invoice with the same supplier and bill number already
+   exists → `Duplicate`, with the invoice named in the Note.
+5. **Draft** the Purchase Invoice → `Drafted`.
+
+### Review: supplier and document type
+
+The supplier and the document type decide what happens before a draft exists,
+so they are corrected on the letter, not on the draft. **Review** on the letter
+(or **ePost → Wrong Supplier or Type** on the draft Purchase Invoice) shows the
+issuer as read, how the supplier was found and the closest suppliers, and takes
+a document type and an existing or new supplier. At any status until the
+invoice is submitted:
+
+- an unsubmitted draft is deleted and built again, with the booking suggested
+  for the chosen supplier and a credit note drafted as a return;
+- a type that is never booked (Reminder, Contract, Correspondence, Other)
+  marks the letter `Not Bookable` instead;
+- a supplier that replaces an automatic match removes what made it match: its
+  aliases carrying the issuer's name, VAT id or IBAN, and the issuer's VAT id on
+  the Supplier itself (a comment on the Supplier says what went). The chosen
+  supplier learns them instead;
+- on a `Duplicate`, *Not a duplicate* skips the check when the number was
+  misread.
+
+A reviewed letter skips the routing rules and the type checks: the person has
+decided.
+
+### The draft Purchase Invoice is where review happens
+
+It is created as a draft and **never submitted**. One line per VAT rate the
+letter shows, each with the expense account, item tax template and cost center
+the booking suggestion found (see below), and the matching Purchase Taxes and
+Charges Template. The app adds an **ePost** section to Purchase Invoice: the
+letter link, the extraction confidence and **Review Notes**, which say in plain
+words what to check (amounts that do not add up, an account chosen by the model,
+VAT not applied, a currency that could not be used). Each line records its
+**Booking Source** (Rule, History, LLM, Default, None). Everything stays
+editable; submitting is the approval. A letter classified as a credit note is
+drafted as a debit note (a return). `bill_no`, `bill_date` and `due_date` come
+from the extraction, and the letter's PDF is attached.
+
+The letter's currency is used when ERPNext accepts it for the supplier (its
+ledger entries or payable account are in that currency or the company currency,
+or multi-currency invoices are allowed) **and** ERPNext has a buying exchange
+rate for the posting date. Otherwise the draft stays in the company currency and
+a review note says so. On a site that names Purchase Invoices by prompt (as a
+migration keeping old numbers does), the draft takes the next number of the
+naming series.
 
 ## Extraction
 
-`extraction/` defines the interface and ships **no working extractor**. The
-default `NoopExtractor` returns `None`, so extraction fields stay empty and
-letters stop at `Downloaded`.
+`extraction/` defines the interface and ships two extractors. The default
+`NoopExtractor` returns `None`, so nothing is extracted and letters stop at
+`Downloaded`.
 
-To add one, for example an LLM-backed extractor:
+`FlowExtractor` (`extractor = Flow`) needs the optional
+[Frappe Flow](https://github.com/frappe/flow_client) app and an enabled Flow
+Model, named in `ePost Settings.flow_model`. It sends the PDF's text layer to the
+model, or the PDF itself when there is no usable text, and reads back vendor,
+tax id, country, address, IBAN, QR reference, invoice number, dates, service
+period, currency, net / VAT / gross, a per-rate VAT breakdown and a document
+kind. **Letter content leaves the site for the model's provider.** The stored
+confidence is the model's estimate minus a penalty per failed consistency check
+(totals, VAT breakdown, dates, currency).
 
-1. Subclass `LetterExtractor` in `extraction/anthropic.py`, set `name`, implement
+The hourly sync processes letters as it downloads them. Letters synced before an
+extractor was configured are processed once with **Process All** on the list, or
+`bench --site <site> execute epost_connector.inbox.process.process_downloaded`.
+
+To add another extractor:
+
+1. Subclass `LetterExtractor`, set `name`, implement
    `extract(self, letter_doc, pdf_bytes) -> ExtractionResult | None`.
 2. Register it in `extraction/registry.py::EXTRACTORS` under a key, and add the
    same key to the `extractor` Select options on `ePost Settings`.
 
-Nothing in the sync engine or the invoice importer changes. Results land in
-read-only fields on the letter, so a wrong answer is visible and correctable by a
-human before anything is booked.
+## Booking suggestion
+
+When a draft is built, `booking/` suggests how each VAT group of the letter is
+booked. It is computed then, not stored. Three sources are asked in a fixed
+order, each filling only what is still open:
+
+1. **ePost Rule** rows with *Apply = Before history*: explicit decisions,
+   matched on supplier, vendor tax id, keyword, vendor country, document kind.
+2. **History**: the supplier's own submitted Purchase Invoices, grouped by
+   account and item tax template and weighted by amount, halved per year of
+   age. The leading combination is used when it holds at least half the weight,
+   and its share is the confidence. The cost center is not part of the grouping;
+   the one carrying most of that combination's weight is suggested. Lines on
+   accounts disabled since are ignored.
+3. **ePost Rule** rows with *Apply = After history*: defaults such as
+   "VAT not charged, foreign vendor, account starting with 4 → reverse-charge
+   template". These may also replace a template the model chose.
+
+With **Use Flow Model for Suppliers and Bookings** on, lines still without an
+account go to the Flow model in one call per letter. It is shown the accounts
+and item tax templates the company has booked supplier invoices to, and one
+booking example per supplier for the 150 suppliers with the most booked weight,
+and may answer only from those lists. A template whose rate does not match the
+line is dropped and the account kept. The model's confidence is capped at 0.6,
+so it never outranks a supplier history that is at least 60 % consistent.
+
+A template's VAT rate is read from the Purchase Taxes and Charges Template of the
+same name, with `Deduct` rows subtracted, so a reverse-charge template counts as
+the 0 % the supplier charged. Name both templates alike.
+
+`booking.backtest.run(company, ...)` replays the suggestion over invoices that
+were already booked by hand, each using only earlier invoices, and reports the
+accuracy per source.
 
 ## Parallel operation
 

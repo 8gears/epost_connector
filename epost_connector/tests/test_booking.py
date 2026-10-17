@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 import frappe
 
-from epost_connector.booking import backtest, history
+from epost_connector.booking import backtest, history, llm
 from epost_connector.booking.suggest import (
 	AFTER_HISTORY,
 	BEFORE_HISTORY,
@@ -228,6 +228,134 @@ class RuleTest(BookingTestCase):
 		self.assertIn("Company", str(caught.exception))
 
 
+class VatReviewTest(BookingTestCase):
+	"""A rule can reserve the VAT template for a person, against every later source."""
+
+	def review_rule(self, **values) -> str:
+		return self.rule(apply_when=BEFORE_HISTORY, vat_needs_review=1, **values)
+
+	def test_a_review_rule_leaves_the_template_empty_and_says_why(self):
+		rule = self.review_rule(foreign_only=1, vat_on_invoice="Not charged")
+
+		(line,) = suggest(
+			self.context(NEW, groups=[VatGroup(net=50, rate=0.0)], vendor_country="Germany")
+		).lines
+
+		self.assertIsNone(line.item_tax_template)
+		self.assertEqual(line.template_source, "Review")
+		self.assertEqual(line.review_rule, rule)
+		self.assertIn(rule, line.evidence)
+
+	def test_history_does_not_fill_a_template_held_for_review(self):
+		book_invoice(self.company, KNOWN, [(self.acct_a, self.templates["reverse"], 100)])
+		self.review_rule(supplier=KNOWN)
+
+		(line,) = suggest(self.context(KNOWN, groups=[VatGroup(net=50, rate=0.0)])).lines
+
+		self.assertEqual(line.expense_account, self.acct_a, "history still fills the account")
+		self.assertEqual(line.account_source, "History")
+		self.assertIsNone(line.item_tax_template)
+		self.assertEqual(line.template_source, "Review")
+
+	def test_history_does_not_fill_it_when_a_rule_chose_the_account(self):
+		book_invoice(self.company, KNOWN, [(self.acct_a, self.templates["reverse"], 100)])
+		self.review_rule(supplier=KNOWN, expense_account=self.acct_b)
+
+		(line,) = suggest(self.context(KNOWN, groups=[VatGroup(net=50, rate=0.0)])).lines
+
+		self.assertEqual(line.expense_account, self.acct_b)
+		self.assertIsNone(line.item_tax_template)
+
+	def test_a_later_rule_does_not_fill_it(self):
+		self.review_rule(foreign_only=1, vat_on_invoice="Not charged")
+		self.rule(apply_when=AFTER_HISTORY, foreign_only=1, item_tax_template=self.templates["reverse"])
+
+		(line,) = suggest(
+			self.context(NEW, groups=[VatGroup(net=50, rate=0.0)], vendor_country="Germany")
+		).lines
+
+		self.assertIsNone(line.item_tax_template)
+		self.assertEqual(line.template_source, "Review")
+
+	def test_the_model_does_not_fill_it_and_is_told_so(self):
+		book_invoice(self.company, KNOWN, [(self.acct_b, self.templates["reverse"], 100)])
+		self.review_rule(foreign_only=1, vat_on_invoice="Not charged")
+		answer = {
+			"lines": [
+				{
+					"index": 0,
+					"expense_account": self.acct_b,
+					"item_tax_template": self.templates["reverse"],
+					"confidence": 1,
+					"reason": "x",
+				}
+			]
+		}
+
+		with patch("epost_connector.booking.llm.ask_json", return_value=(answer, None)) as ask:
+			(line,) = suggest(
+				self.context(NEW, groups=[VatGroup(net=50, rate=0.0)], vendor_country="Germany"),
+				llm_model="any",
+			).lines
+
+		self.assertEqual(line.expense_account, self.acct_b, "the model still chooses the account")
+		self.assertIsNone(line.item_tax_template)
+		self.assertEqual(line.template_source, "Review")
+		prompt = ask.call_args.args[1][1]["content"]
+		self.assertIn("VAT template: for review", prompt)
+
+	def test_a_rule_after_history_overrules_a_template_the_model_chose(self):
+		book_invoice(self.company, KNOWN, [(self.acct_b, self.templates["reverse"], 100)])
+		self.rule(apply_when=AFTER_HISTORY, vat_needs_review=1, vat_on_invoice="Not charged")
+		answer = {
+			"lines": [
+				{
+					"index": 0,
+					"expense_account": self.acct_b,
+					"item_tax_template": self.templates["reverse"],
+					"confidence": 1,
+					"reason": "x",
+				}
+			]
+		}
+
+		with patch("epost_connector.booking.llm.ask_json", return_value=(answer, None)):
+			(line,) = suggest(self.context(NEW, groups=[VatGroup(net=50, rate=0.0)]), llm_model="any").lines
+
+		self.assertIsNone(line.item_tax_template)
+		self.assertEqual(line.template_source, "Review")
+
+	def test_an_earlier_rule_that_set_a_template_wins_over_a_review_rule(self):
+		self.rule(
+			apply_when=BEFORE_HISTORY,
+			priority=1,
+			supplier=ensure_supplier(NEW),
+			item_tax_template=self.templates["reverse"],
+		)
+		self.review_rule(priority=2)
+
+		(line,) = suggest(self.context(NEW, groups=[VatGroup(net=50, rate=0.0)])).lines
+
+		self.assertEqual(line.item_tax_template, self.templates["reverse"])
+
+	def test_review_alone_is_a_valid_target_but_not_together_with_a_template(self):
+		self.review_rule()
+		with self.assertRaises(frappe.ValidationError):
+			self.review_rule(item_tax_template=self.templates["reverse"])
+
+
+class PromptTest(BookingTestCase):
+	"""The VAT cases of the corrected rules (erp-8gears #318) are in the model's instructions."""
+
+	def test_consumed_abroad_is_the_zero_rate_template_not_reverse_charge(self):
+		self.assertRegex(llm.INSTRUCTIONS, r"consumed abroad.*\(V00\), not reverse charge")
+
+	def test_goods_exempt_services_and_swiss_without_vat_get_no_template(self):
+		case = next(line for line in llm.INSTRUCTIONS.splitlines() if "Never reverse charge" in line)
+		for phrase in ("empty item_tax_template", "imported", "exempt", "Swiss supplier with no VAT"):
+			self.assertIn(phrase, case)
+
+
 class LlmFallbackTest(BookingTestCase):
 	def test_the_model_books_what_rules_and_history_left_open(self):
 		book_invoice(self.company, KNOWN, [(self.acct_b, self.templates["input"], 100)])
@@ -363,6 +491,29 @@ class BacktestTest(BookingTestCase):
 		self.assertEqual(history_tally["account_accuracy"], 1.0)
 		self.assertEqual(result["by_source"]["None"]["lines"], 1, "the first invoice had no history")
 
+	def test_the_country_read_off_the_letter_wins_over_the_supplier_record(self):
+		# The supplier record says the company's own country, as Bexio did for
+		# some foreign vendors; the letter's address says Germany.
+		supplier = ensure_supplier(NEW)
+		frappe.db.set_value("Supplier", supplier, "country", "Switzerland")
+		self.rule(
+			apply_when=AFTER_HISTORY,
+			foreign_only=1,
+			vat_on_invoice="Not charged",
+			item_tax_template=self.templates["reverse"],
+		)
+		self.rule(apply_when=BEFORE_HISTORY, supplier=supplier, expense_account=self.acct_a)
+		read = book_invoice(self.company, NEW, [(self.acct_a, self.templates["reverse"], 40)], "2024-03-01")
+		unread = book_invoice(self.company, NEW, [(self.acct_a, self.templates["reverse"], 40)], "2024-04-01")
+		_letter_for(read, vendor_country="Germany")
+		_letter_for(unread, vendor_country=None)
+
+		with patch.object(backtest, "suggest", wraps=backtest.suggest) as spy:
+			backtest.run(self.company)
+
+		seen = {call.args[0].vendor_country for call in spy.call_args_list}
+		self.assertEqual(seen, {"Germany", "Switzerland"}, "letter country first, supplier as fallback")
+
 
 class RoutingTest(BookingTestCase):
 	def test_a_status_rule_stops_the_letter_for_its_document_kind(self):
@@ -397,6 +548,26 @@ class AnalyzeAllTest(ePostSiteTestCase):
 
 		with self.assertRaises(frappe.ValidationError):
 			analyze_all()
+
+
+def _letter_for(invoice: str, vendor_country: str | None) -> str:
+	"""A letter the invoice was drafted from, with what extraction read off it."""
+	letter = frappe.get_doc(
+		{"doctype": "ePost Letter", "letter_id": f"backtest-{invoice}", "status": "Drafted"}
+	)
+	letter.insert(ignore_permissions=True)
+	log = frappe.get_doc(
+		{
+			"doctype": "ePost Extraction Log",
+			"letter": letter.name,
+			"kind": "Extraction",
+			"vendor_country": vendor_country,
+		}
+	)
+	log.insert(ignore_permissions=True)
+	letter.db_set({"extraction_log": log.name, "purchase_invoice": invoice})
+	frappe.db.commit()
+	return letter.name
 
 
 def _second_cost_center(company: str) -> str:

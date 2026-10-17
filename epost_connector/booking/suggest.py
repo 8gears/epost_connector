@@ -8,6 +8,12 @@ Three sources, asked in a fixed order, each filling only what is still open:
 3. Rules applied *after* history. Defaults for suppliers with no history, such
    as "a foreign supplier on a 4xxx account gets the reverse-charge template".
 
+A rule may also hold a line's VAT template for review (`vat_needs_review`): the
+template stays empty, `template_source` becomes "Review", and no later rule, the
+history or the model fills it. That is how the cases where a template must not
+be guessed (imported goods, exempt services, a Swiss supplier without VAT) reach
+a person instead of getting the reverse-charge default.
+
 The LLM fallback is a separate, optional step (`llm.py`) for what is still open.
 Nothing here books anything: the result is a suggestion a human confirms on a
 draft invoice.
@@ -41,6 +47,8 @@ SOURCE_HISTORY = "History"
 SOURCE_LLM = "LLM"
 SOURCE_DEFAULT = "Default"
 SOURCE_NONE = "None"
+#: Only for `template_source`: a rule decided that a person picks the template.
+SOURCE_REVIEW = "Review"
 
 
 @dataclass
@@ -76,6 +84,12 @@ class SuggestedLine:
 	template_source: str = SOURCE_NONE
 	confidence: float = 0.0
 	evidence: list[str] = field(default_factory=list)
+	review_rule: str | None = None
+
+	@property
+	def template_held(self) -> bool:
+		"""A template is chosen, or a rule reserved the choice for a person."""
+		return bool(self.item_tax_template) or self.template_source == SOURCE_REVIEW
 
 
 @dataclass
@@ -177,10 +191,10 @@ def _apply_rules(
 
 	With `over_llm`, a rule may also replace a VAT template the LLM chose: the
 	rules after history encode how VAT is coded, which is a decision a human
-	wrote down and the model only guesses at.
+	wrote down and the model only guesses at. A review rule replaces it too.
 	"""
 	for rule in rules:
-		template_open = not line.item_tax_template or (over_llm and line.template_source == SOURCE_LLM)
+		template_open = not line.template_held or (over_llm and line.template_source == SOURCE_LLM)
 		if line.expense_account and not template_open and line.cost_center:
 			return
 		if not _rule_matches(rule, context, line):
@@ -192,7 +206,16 @@ def _apply_rules(
 			line.expense_account = rule.expense_account
 			line.account_source = source
 			filled = True
-		if template_open and rule.item_tax_template and history.rate_fits(rule.item_tax_template, line.rate):
+		if template_open and rule.vat_needs_review:
+			line.item_tax_template = None
+			line.template_source = SOURCE_REVIEW
+			line.review_rule = rule.name
+			# Nothing was suggested, so there is no confidence to add.
+			line.evidence.append(rule.name)
+			template_open = False
+		elif (
+			template_open and rule.item_tax_template and history.rate_fits(rule.item_tax_template, line.rate)
+		):
 			line.item_tax_template = rule.item_tax_template
 			line.template_source = source
 			filled = True
@@ -204,7 +227,7 @@ def _apply_rules(
 
 
 def _apply_history(line: SuggestedLine, ranked: list[history.Combination], confidences: list) -> None:
-	if line.expense_account and line.item_tax_template:
+	if line.expense_account and line.template_held:
 		return
 	fitting = [
 		c
@@ -226,7 +249,7 @@ def _apply_history(line: SuggestedLine, ranked: list[history.Combination], confi
 
 	line.expense_account = top.expense_account
 	line.account_source = SOURCE_HISTORY
-	if not line.item_tax_template and top.item_tax_template:
+	if not line.template_held and top.item_tax_template:
 		line.item_tax_template = top.item_tax_template
 		line.template_source = SOURCE_HISTORY
 	if not line.cost_center:
@@ -330,6 +353,7 @@ def _load_rules(company: str) -> list:
 			"keyword",
 			"expense_account",
 			"item_tax_template",
+			"vat_needs_review",
 			"cost_center",
 		],
 		order_by="priority asc, name asc",

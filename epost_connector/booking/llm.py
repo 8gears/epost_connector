@@ -58,7 +58,13 @@ Choose an expense account and a VAT template for each open invoice line.
 Rules:
 - Answer only with an account from ALLOWED ACCOUNTS and a template from ALLOWED TEMPLATES, copied exactly.
 - Prefer how similar suppliers were booked (BOOKING EXAMPLES): same kind of service, same country.
-- The VAT rate the supplier charged on the line decides the template family: a line with VAT charged uses an input-tax template whose charged rate equals that rate; a foreign supplier charging no VAT is usually reverse charge (charged rate 0).
+- VAT template. The VAT on the invoice line decides, not the supplier's country. The booking account's class picks material (accounts 4xxx) or other operating expense (1xxx, 5xxx-8xxx) where both exist. Check the cases in this order:
+  1. Swiss VAT charged (a Swiss supplier, or a foreign firm registered for Swiss VAT): the input-tax template whose charged rate equals the line's rate.
+  2. No VAT charged, supplier abroad, service used in Switzerland (software, cloud, a foreign freelancer, including costs the freelancer recharges on the same bill): reverse charge (Bezugsteuer, charged rate 0), at any amount.
+  3. No VAT charged, consumed abroad (hotels, meals and transport abroad, foreign customs fees): the 0 % template without input tax (V00), not reverse charge.
+  4. Swiss items without VAT (taxes, social insurance, insurance premiums, international flights, sponsoring): the 0 % template without input tax (V00).
+  5. Never reverse charge. Answer an empty item_tax_template so a person decides: goods physically imported (import VAT is charged at the border), services exempt from VAT (insurance, banking, education, property rent), a Swiss supplier with no VAT on the invoice outside case 4, and anything cases 1-4 do not settle.
+- A line marked "VAT template: for review" keeps an empty item_tax_template; choose only its account.
 - confidence is 0 to 1. Use low values when the invoice gives little to go on.
 - reason: one short sentence naming the example you followed."""
 
@@ -97,7 +103,7 @@ def fill(
 		if (
 			isinstance(template, str)
 			and template in templates
-			and not line.item_tax_template
+			and not line.template_held
 			and history.rate_fits(template, line.rate)
 		):
 			line.item_tax_template = template
@@ -165,6 +171,7 @@ def _prompt(context, lines: list, accounts: dict, templates: dict, examples: lis
 		f"{i}. net {flt(line.net):.2f}, VAT charged "
 		f"{'unknown' if line.rate is None else f'{flt(line.rate):g} %'}, "
 		f"description: {line.description or '-'}"
+		+ (", VAT template: for review" if line.template_held and not line.item_tax_template else "")
 		for i, line in enumerate(lines)
 	)
 	invoice = "\n".join(

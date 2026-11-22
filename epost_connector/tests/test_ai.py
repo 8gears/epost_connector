@@ -116,7 +116,13 @@ class AskJsonTest(IntegrationTestCase):
 
 	def test_broken_frappe_flow_is_a_logged_failure(self):
 		app_model = MagicMock()
-		modules = {**_frappe_flow(MagicMock()), "frappe.flow.lib.model": None, **_flow_app(app_model)}
+		# frappe.flow is there, but importing what is inside it fails.
+		broken = {
+			"frappe.flow": _module("frappe.flow"),
+			"frappe.flow.lib": None,
+			"frappe.flow.lib.model": None,
+		}
+		modules = {**broken, "litellm": SimpleNamespace(completion=MagicMock()), **_flow_app(app_model)}
 		traceback = []
 		with (
 			patch.dict(sys.modules, modules),

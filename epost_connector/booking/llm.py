@@ -5,9 +5,9 @@ this company has actually booked supplier invoices to, and how every known
 supplier was booked, and must answer with names from those lists. Any other
 answer is dropped and the line stays open for a human.
 
-Frappe Flow is an optional app. Without it, or without a working model, nothing
-is filled and nothing raises: a draft with an open line is the same outcome as
-before this module existed.
+Frappe Flow is built into frappe >= 16.60 and an optional app before that.
+Without it, or without a working model, nothing is filled and nothing raises: a
+draft with an open line is the same outcome as before this module existed.
 """
 
 from __future__ import annotations

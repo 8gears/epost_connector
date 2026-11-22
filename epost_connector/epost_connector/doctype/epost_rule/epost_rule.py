@@ -25,13 +25,18 @@ class ePostRule(Document):
 			or self.set_supplier
 			or self.expense_account
 			or self.item_tax_template
+			or self.vat_needs_review
 			or self.cost_center
 		):
 			frappe.throw(
 				_(
-					"Set at least one of Set Status, Set Supplier, Expense Account, Item Tax Template or Cost Center"
+					"Set at least one of Set Status, Set Supplier, Expense Account, Item Tax Template, "
+					"VAT Template for Review or Cost Center"
 				)
 			)
+
+		if self.vat_needs_review and self.item_tax_template:
+			frappe.throw(_("A rule either sets an Item Tax Template or leaves it for review, not both"))
 
 		if self.keyword:
 			try:

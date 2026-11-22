@@ -40,7 +40,8 @@ jobs:
 
   tests:
     name: bench run-tests
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest moved past 24.04 and its archive has no wkhtmltopdf.
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
 
     services:

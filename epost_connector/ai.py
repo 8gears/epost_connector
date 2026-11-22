@@ -1,19 +1,23 @@
 """One JSON answer from a Frappe Flow model.
 
-Flow is an optional app, so everything here degrades to `None` rather than
-raising: a letter the model could not read is the same outcome as a letter no
-model was asked about.
+frappe >= 16.60 has Flow built in; on older frappe it is the optional `flow`
+app. Either may be missing or fail, so everything here degrades to `None`
+rather than raising: a letter the model could not read is the same outcome as a
+letter no model was asked about.
 
-The schema goes into the prompt instead of `response_format`. litellm 1.83.7
-emulates `response_format` for Anthropic models it does not list as supporting
-structured output by forcing a tool call, and newer models refuse that with
-"tool_choice: type "tool" and "any" are not supported for this model". Every
-caller validates the answer against what it may contain anyway, so a prompt-level
-schema loses nothing.
+The schema goes into the prompt instead of `response_format`. litellm 1.83.7, the
+last the flow app allows, emulates `response_format` for Anthropic models it does
+not list as supporting structured output by forcing a tool call, and newer models
+refuse that with "tool_choice: type "tool" and "any" are not supported for this
+model". frappe 16.60.2 pins litellm 1.103.2, not checked for this. Every caller
+validates the answer against what it may contain anyway, so a prompt-level schema
+loses nothing.
 """
 
 from __future__ import annotations
 
+import functools
+import importlib.util
 import json
 import re
 from typing import Any
@@ -38,53 +42,54 @@ def ask_json(model_name: str, messages: list[dict], schema: dict) -> tuple[dict 
 		f"It must validate against this JSON Schema:\n{json.dumps(schema)}"
 	)
 
+	# A frappe.throw on the way (no permission for the model, model disabled) queues a
+	# message for the Desk user before it raises; the failure is swallowed here, so is its dialog.
+	message_log = getattr(frappe.local, "message_log", None)
+	queued = len(message_log) if message_log is not None else 0
 	try:
 		content, usage = chat(model_name, messages)
 	except Exception:
+		if message_log is not None:
+			del message_log[queued:]
 		frappe.log_error("ePost: model call failed", reference_doctype="ePost Settings")
 		return None, None
 
 	return parse_object(content), usage
 
 
+@functools.cache
 def _chat_function():
-	"""frappe's built-in Flow (frappe >= 16.60) when present, else the separate `flow` app."""
-	try:
-		from frappe.flow.lib import model
-	except ImportError:
-		pass
-	else:
+	"""By presence, not by import: an import that fails inside an installed Flow is a model
+	call failure with its traceback, not a missing Flow."""
+	if importlib.util.find_spec("frappe.flow"):
 		return _chat_frappe_flow
-	try:
-		from flow.lib.model import Model
-	except ImportError:
-		return None
-	return _chat_flow_app
+	if importlib.util.find_spec("flow"):
+		return _chat_flow_app
+	return None
 
 
 def _chat_frappe_flow(model_name: str, messages: list[dict]) -> tuple[str | None, dict | None]:
 	"""frappe's Flow has no chat call outside its daemon, so litellm is called with its config.
 
-	No Flow Model permission check: the model is the one ePost Settings names, not the caller's
-	choice, and the old app's `Model` checked nothing. The desk actions that reach here
-	(`process`, `review`) already require write on the letter.
-	The model's Extra Params go first and the connector's arguments last, as frappe's own
-	`FlowModel.test_connection` does, so a `timeout` in Extra Params cannot collide with ours."""
+	`model_config` checks that the user may read the Flow Model, which honours its Roles
+	(frappe/flow/permissions.py has_role_permission). Scheduled jobs run as Administrator,
+	who passes every check; a Desk user without access gets no answer, as for any failure."""
 	import litellm
 	from frappe.flow.lib.model import litellm_route, model_config
 
-	config = model_config(model_name, check_permission=False)
+	config = model_config(model_name)
 	model, api_base = litellm_route(config["model"], config.get("api_base"))
-	response = litellm.completion(
-		**{
-			**config.get("model_params", {}),
-			"model": model,
-			"api_key": config.get("api_key"),
-			"api_base": api_base,
-			"messages": messages,
-			"timeout": TIMEOUT,
-		}
-	)
+	# The flow app's order: the model's Extra Params override our defaults, timeout included.
+	kwargs: dict[str, Any] = {
+		"model": model,
+		"api_key": config.get("api_key"),
+		"messages": messages,
+		"timeout": TIMEOUT,
+		**config.get("model_params", {}),
+	}
+	if api_base:
+		kwargs["api_base"] = api_base
+	response = litellm.completion(**kwargs)
 	return response.choices[0].message.content, _usage(getattr(response, "usage", None))
 
 
@@ -96,13 +101,11 @@ def _chat_flow_app(model_name: str, messages: list[dict]) -> tuple[str | None, d
 
 
 def _usage(usage: Any) -> dict | None:
-	"""litellm's usage object, or the flow app's usage dict, as the two token counts."""
 	if not usage:
 		return None
-	get = usage.get if isinstance(usage, dict) else lambda key, default: getattr(usage, key, default)
 	return {
-		"prompt_tokens": get("prompt_tokens", 0) or 0,
-		"completion_tokens": get("completion_tokens", 0) or 0,
+		"prompt_tokens": usage.get("prompt_tokens", 0) or 0,
+		"completion_tokens": usage.get("completion_tokens", 0) or 0,
 	}
 
 

@@ -64,19 +64,26 @@ def _chat_function():
 
 def _chat_frappe_flow(model_name: str, messages: list[dict]) -> tuple[str | None, dict | None]:
 	"""frappe's Flow has no chat call outside its daemon, so litellm is called with its config.
-	No permission check: the old app's `Model` had none, and the callers run as scheduled jobs."""
+
+	No Flow Model permission check: the model is the one ePost Settings names, not the caller's
+	choice, and the old app's `Model` checked nothing. The desk actions that reach here
+	(`process`, `review`) already require write on the letter.
+	The model's Extra Params go first and the connector's arguments last, as frappe's own
+	`FlowModel.test_connection` does, so a `timeout` in Extra Params cannot collide with ours."""
 	import litellm
 	from frappe.flow.lib.model import litellm_route, model_config
 
 	config = model_config(model_name, check_permission=False)
 	model, api_base = litellm_route(config["model"], config.get("api_base"))
 	response = litellm.completion(
-		model=model,
-		api_key=config.get("api_key"),
-		api_base=api_base,
-		messages=messages,
-		timeout=TIMEOUT,
-		**config.get("model_params", {}),
+		**{
+			**config.get("model_params", {}),
+			"model": model,
+			"api_key": config.get("api_key"),
+			"api_base": api_base,
+			"messages": messages,
+			"timeout": TIMEOUT,
+		}
 	)
 	return response.choices[0].message.content, _usage(getattr(response, "usage", None))
 
@@ -85,15 +92,17 @@ def _chat_flow_app(model_name: str, messages: list[dict]) -> tuple[str | None, d
 	from flow.lib.model import Model
 
 	response = Model(model_name).chat(messages)
-	return response.content, getattr(response, "usage", None)
+	return response.content, _usage(getattr(response, "usage", None))
 
 
 def _usage(usage: Any) -> dict | None:
+	"""litellm's usage object, or the flow app's usage dict, as the two token counts."""
 	if not usage:
 		return None
+	get = usage.get if isinstance(usage, dict) else lambda key, default: getattr(usage, key, default)
 	return {
-		"prompt_tokens": getattr(usage, "prompt_tokens", 0) or 0,
-		"completion_tokens": getattr(usage, "completion_tokens", 0) or 0,
+		"prompt_tokens": get("prompt_tokens", 0) or 0,
+		"completion_tokens": get("completion_tokens", 0) or 0,
 	}
 
 

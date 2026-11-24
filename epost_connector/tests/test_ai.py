@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import inspect
 import sys
+from importlib.abc import Loader, MetaPathFinder
 from importlib.machinery import ModuleSpec
 from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -20,15 +21,14 @@ SCHEMA = {"type": "object"}
 MESSAGES = [{"role": "user", "content": "Read this letter."}]
 
 
-def _module(name: str) -> ModuleType:
-	# importlib.util.find_spec raises on a module in sys.modules whose __spec__ is None.
+def _package(name: str) -> ModuleType:
 	module = ModuleType(name)
-	module.__spec__ = ModuleSpec(name, None)
+	module.__path__ = []
 	return module
 
 
 def _frappe_flow(completion: MagicMock, model_params: dict | None = None) -> dict[str, ModuleType]:
-	model = _module("frappe.flow.lib.model")
+	model = ModuleType("frappe.flow.lib.model")
 	model.model_config = MagicMock(
 		return_value={
 			"model": "anthropic/m",
@@ -38,7 +38,7 @@ def _frappe_flow(completion: MagicMock, model_params: dict | None = None) -> dic
 		}
 	)
 	model.litellm_route = lambda model_id, api_base: (model_id, api_base)
-	lib, flow = _module("frappe.flow.lib"), _module("frappe.flow")
+	lib, flow = _package("frappe.flow.lib"), _package("frappe.flow")
 	lib.model, flow.lib = model, lib
 	return {
 		"frappe.flow": flow,
@@ -49,9 +49,9 @@ def _frappe_flow(completion: MagicMock, model_params: dict | None = None) -> dic
 
 
 def _flow_app(model_class: MagicMock) -> dict[str, ModuleType]:
-	model = _module("flow.lib.model")
+	model = ModuleType("flow.lib.model")
 	model.Model = model_class
-	lib, flow = _module("flow.lib"), _module("flow")
+	lib, flow = _package("flow.lib"), _package("flow")
 	lib.model, flow.lib = model, lib
 	return {"flow": flow, "flow.lib": lib, "flow.lib.model": model}
 
@@ -60,17 +60,25 @@ NO_FRAPPE_FLOW = dict.fromkeys(("frappe.flow", "frappe.flow.lib", "frappe.flow.l
 NO_FLOW_APP = dict.fromkeys(("flow", "flow.lib", "flow.lib.model"))
 
 
-def _reply(content: str) -> SimpleNamespace:
-	usage = {"prompt_tokens": 7, "completion_tokens": 3}
+class _BrokenInside(MetaPathFinder, Loader):
+	"""frappe.flow.lib.model exists, but a module it imports is missing."""
+
+	def find_spec(self, name, path, target=None):
+		return ModuleSpec(name, self) if name == "frappe.flow.lib.model" else None
+
+	def create_module(self, spec):
+		return None
+
+	def exec_module(self, module):
+		raise ModuleNotFoundError("No module named 'pydantic_core'", name="pydantic_core")
+
+
+def _reply(content: str, usage=None) -> SimpleNamespace:
+	usage = usage or {"prompt_tokens": 7, "completion_tokens": 3}
 	return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content))], usage=usage)
 
 
 class AskJsonTest(IntegrationTestCase):
-	def setUp(self):
-		# The backend is cached per process; each test fakes a different one.
-		ai._chat_function.cache_clear()
-		self.addCleanup(ai._chat_function.cache_clear)
-
 	def test_frappe_flow_is_preferred(self):
 		completion = MagicMock(return_value=_reply('{"a": 1}'))
 		app_model = MagicMock()
@@ -79,61 +87,92 @@ class AskJsonTest(IntegrationTestCase):
 			answer, got = ai.ask_json("Claude", MESSAGES, SCHEMA)
 		self.assertEqual(answer, {"a": 1})
 		self.assertEqual(got, {"prompt_tokens": 7, "completion_tokens": 3})
-		modules["frappe.flow.lib.model"].model_config.assert_called_once_with("Claude")
+		# Desk jobs run as the clicking user, who need not have read on Flow Model.
+		modules["frappe.flow.lib.model"].model_config.assert_called_once_with(
+			"Claude", check_permission=False
+		)
 		kwargs = completion.call_args.kwargs
 		self.assertEqual((kwargs["model"], kwargs["api_key"], kwargs["temperature"]), ("anthropic/m", "k", 0))
 		self.assertEqual(kwargs["timeout"], ai.TIMEOUT)
 		self.assertNotIn("api_base", kwargs)
 		app_model.assert_not_called()
 
-	def test_extra_params_timeout_wins(self):
+	def test_extra_params_cannot_override_timeout(self):
 		completion = MagicMock(return_value=_reply('{"a": 1}'))
-		with patch.dict(sys.modules, _frappe_flow(completion, {"timeout": 5, "temperature": 0})):
+		extra = {"timeout": 5, "model": "other", "temperature": 0, "top_p": 0.5}
+		with patch.dict(sys.modules, _frappe_flow(completion, extra)):
 			answer, _ = ai.ask_json("Claude", MESSAGES, SCHEMA)
 		self.assertEqual(answer, {"a": 1})
 		kwargs = completion.call_args.kwargs
-		self.assertEqual((kwargs["timeout"], kwargs["temperature"]), (5, 0))
+		self.assertEqual((kwargs["timeout"], kwargs["model"]), (ai.TIMEOUT, "anthropic/m"))
+		self.assertEqual((kwargs["temperature"], kwargs["top_p"]), (0, 0.5))
 
-	def test_refused_model_leaves_no_message(self):
+	def test_usage_as_attributes(self):
+		usage = SimpleNamespace(prompt_tokens=11, completion_tokens=None)
+		completion = MagicMock(return_value=_reply('{"a": 1}', usage))
+		with patch.dict(sys.modules, _frappe_flow(completion)):
+			_, got = ai.ask_json("Claude", MESSAGES, SCHEMA)
+		self.assertEqual(got, {"prompt_tokens": 11, "completion_tokens": 0})
+
+	def test_failed_model_call_queues_no_message(self):
 		completion = MagicMock()
 		modules = _frappe_flow(completion)
-		earlier = ["kept"]
+		muted_during_call = []
 
-		def refuse(*args, **kwargs):
-			ai.frappe.local.message_log.append("You don't have permission to use Claude.")
-			raise PermissionError
+		def disabled(*args, **kwargs):
+			muted_during_call.append(ai.frappe.flags.mute_messages)
+			raise ValueError("Flow Model Claude is disabled.")
 
-		modules["frappe.flow.lib.model"].model_config.side_effect = refuse
+		modules["frappe.flow.lib.model"].model_config.side_effect = disabled
 		with (
 			patch.dict(sys.modules, modules),
-			patch.object(ai.frappe.local, "message_log", earlier, create=True),
+			patch.dict(ai.frappe.flags, {"mute_messages": False}),
 			patch.object(ai.frappe, "log_error") as log,
 		):
 			self.assertEqual(ai.ask_json("Claude", MESSAGES, SCHEMA), (None, None))
-		self.assertEqual(earlier, ["kept"])
+			self.assertFalse(ai.frappe.flags.mute_messages)
+		self.assertEqual(muted_during_call, [True])
 		log.assert_called_once()
 		completion.assert_not_called()
 
 	def test_broken_frappe_flow_is_a_logged_failure(self):
 		app_model = MagicMock()
-		# frappe.flow is there, but importing what is inside it fails.
-		broken = {
-			"frappe.flow": _module("frappe.flow"),
-			"frappe.flow.lib": None,
-			"frappe.flow.lib.model": None,
+		modules = {
+			"frappe.flow": _package("frappe.flow"),
+			"frappe.flow.lib": _package("frappe.flow.lib"),
+			**_flow_app(app_model),
 		}
-		modules = {**broken, "litellm": SimpleNamespace(completion=MagicMock()), **_flow_app(app_model)}
 		traceback = []
 		with (
 			patch.dict(sys.modules, modules),
+			patch.object(sys, "meta_path", [_BrokenInside(), *sys.meta_path]),
 			patch.object(
-				ai.frappe, "log_error", side_effect=lambda *a, **k: traceback.append(sys.exc_info()[0])
+				ai.frappe, "log_error", side_effect=lambda *a, **k: traceback.append(sys.exc_info()[1])
 			),
 		):
+			sys.modules.pop("frappe.flow.lib.model", None)
 			self.assertEqual(ai.ask_json("Claude", MESSAGES, SCHEMA), (None, None))
 		self.assertEqual(len(traceback), 1)
-		self.assertTrue(issubclass(traceback[0], ImportError))
+		self.assertEqual(traceback[0].name, "pydantic_core")
 		app_model.assert_not_called()
+
+	def test_leftover_frappe_flow_directory_falls_back_to_flow_app(self):
+		app_model = MagicMock()
+		app_model.return_value.chat.return_value = SimpleNamespace(content='{"b": 2}', usage=None)
+		stale = {"frappe.flow": _package("frappe.flow"), "frappe.flow.lib": None}
+		with patch.dict(sys.modules, {**stale, **_flow_app(app_model)}):
+			answer, _ = ai.ask_json("Claude", MESSAGES, SCHEMA)
+		self.assertEqual(answer, {"b": 2})
+		app_model.assert_called_once_with("Claude")
+
+	def test_module_without_spec_does_not_raise(self):
+		completion = MagicMock(return_value=_reply('{"a": 1}'))
+		modules = _frappe_flow(completion)
+		# importlib.util.find_spec raises ValueError on such a module.
+		self.assertIsNone(modules["frappe.flow"].__spec__)
+		with patch.dict(sys.modules, modules):
+			answer, _ = ai.ask_json("Claude", MESSAGES, SCHEMA)
+		self.assertEqual(answer, {"a": 1})
 
 	def test_frappe_flow_api_matches(self):
 		"""The real module, where the bench has frappe >= 16.60: the names and arguments ai.py uses."""
@@ -141,8 +180,8 @@ class AskJsonTest(IntegrationTestCase):
 			from frappe.flow.lib.model import litellm_route, model_config
 		except ImportError:
 			self.skipTest("frappe has no built-in Flow")
-		rest = list(inspect.signature(model_config).parameters.values())[1:]
-		self.assertTrue(all(p.default is not inspect.Parameter.empty for p in rest))
+		params = inspect.signature(model_config).parameters
+		self.assertEqual(params["check_permission"].kind, inspect.Parameter.KEYWORD_ONLY)
 		self.assertEqual(list(inspect.signature(litellm_route).parameters), ["model_id", "api_base"])
 
 	def test_flow_app_when_frappe_has_no_flow(self):

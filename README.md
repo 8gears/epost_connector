@@ -328,10 +328,11 @@ naming series.
 `NoopExtractor` returns `None`, so nothing is extracted and letters stop at
 `Downloaded`.
 
-`FlowExtractor` (`extractor = Flow`) needs Frappe Flow, built into frappe
->= 16.60 (on older frappe, install the optional
+`FlowExtractor` (`extractor = Flow`) needs Frappe Flow, built into frappe 16.60
+and later (on older frappe, install the optional
 [Frappe Flow](https://github.com/frappe/flow_client) app), and an enabled Flow
-Model, named in `ePost Settings.flow_model`. It sends the PDF's text layer to the
+Model, named in `ePost Settings.flow_model`. The Flow Model's roles are not
+checked: anyone allowed to process a letter uses that model. It sends the PDF's text layer to the
 model, or the PDF itself when there is no usable text, and reads back vendor,
 tax id, country, address, IBAN, QR reference, invoice number, dates, service
 period, currency, net / VAT / gross, a per-rate VAT breakdown and a document

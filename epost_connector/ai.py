@@ -16,8 +16,7 @@ loses nothing.
 
 from __future__ import annotations
 
-import functools
-import importlib.util
+import importlib
 import json
 import re
 from typing import Any
@@ -27,65 +26,84 @@ import frappe
 # The flow app's Model default.
 TIMEOUT = 60
 FENCE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE)
+# A ModuleNotFoundError naming one of these means that Flow is not installed; any other
+# name means it is installed and broken. A leftover frappe/flow directory from a newer
+# frappe fails on one of these names too, so it does not hide the flow app.
+FRAPPE_FLOW = ("frappe.flow", "frappe.flow.lib", "frappe.flow.lib.model")
+FLOW_APP = ("flow", "flow.lib", "flow.lib.model")
 
 
 def ask_json(model_name: str, messages: list[dict], schema: dict) -> tuple[dict | None, dict | None]:
 	"""Return (answer, usage). The answer is None when there is no usable JSON object."""
-	chat = _chat_function()
-	if chat is None:
-		frappe.log_error("ePost: Frappe Flow is not installed", reference_doctype="ePost Settings")
-		return None, None
-
 	messages = [dict(m) for m in messages]
 	messages[0]["content"] = (
 		f"{messages[0]['content']}\n\nReply with one JSON object and nothing else. "
 		f"It must validate against this JSON Schema:\n{json.dumps(schema)}"
 	)
 
-	# A frappe.throw on the way (no permission for the model, model disabled) queues a
-	# message for the Desk user before it raises; the failure is swallowed here, so is its dialog.
-	message_log = getattr(frappe.local, "message_log", None)
-	queued = len(message_log) if message_log is not None else 0
 	try:
-		content, usage = chat(model_name, messages)
+		chat = _chat_function()
+		if chat is None:
+			frappe.log_error("ePost: Frappe Flow is not installed", reference_doctype="ePost Settings")
+			return None, None
+		content, usage = _muted(chat, model_name, messages)
 	except Exception:
-		if message_log is not None:
-			del message_log[queued:]
 		frappe.log_error("ePost: model call failed", reference_doctype="ePost Settings")
 		return None, None
 
 	return parse_object(content), usage
 
 
-@functools.cache
 def _chat_function():
-	"""By presence, not by import: an import that fails inside an installed Flow is a model
-	call failure with its traceback, not a missing Flow."""
-	if importlib.util.find_spec("frappe.flow"):
+	if _installed("frappe.flow.lib.model", FRAPPE_FLOW):
 		return _chat_frappe_flow
-	if importlib.util.find_spec("flow"):
+	if _installed("flow.lib.model", FLOW_APP):
 		return _chat_flow_app
 	return None
+
+
+def _installed(module: str, absent_names: tuple[str, ...]) -> bool:
+	try:
+		importlib.import_module(module)
+	except ModuleNotFoundError as exc:
+		if exc.name not in absent_names:
+			raise
+		return False
+	return True
+
+
+def _muted(chat, model_name: str, messages: list[dict]) -> tuple[str | None, dict | None]:
+	"""A frappe.throw on the way (a disabled Flow Model) would queue an error dialog for the
+	Desk user, but ask_json swallows and logs the failure, so the dialog would be stale."""
+	muted = frappe.flags.mute_messages
+	frappe.flags.mute_messages = True
+	try:
+		return chat(model_name, messages)
+	finally:
+		frappe.flags.mute_messages = muted
 
 
 def _chat_frappe_flow(model_name: str, messages: list[dict]) -> tuple[str | None, dict | None]:
 	"""frappe's Flow has no chat call outside its daemon, so litellm is called with its config.
 
-	`model_config` checks that the user may read the Flow Model, which honours its Roles
-	(frappe/flow/permissions.py has_role_permission). Scheduled jobs run as Administrator,
-	who passes every check; a Desk user without access gets no answer, as for any failure."""
+	The Flow Model permission check is off: the model is the one ePost Settings names, not
+	the caller's choice, and every caller has already checked its own right to act (write on
+	the letter, or frappe.only_for). The flow app checked no permission either. With the
+	check on, a Desk-triggered job runs as the clicking user and an Accounts user without
+	read on Flow Model would get no answer."""
 	import litellm
 	from frappe.flow.lib.model import litellm_route, model_config
 
-	config = model_config(model_name)
+	config = model_config(model_name, check_permission=False)
 	model, api_base = litellm_route(config["model"], config.get("api_base"))
-	# The flow app's order: the model's Extra Params override our defaults, timeout included.
+	# Extra Params first, as frappe's FlowModel.test_connection does, so they cannot replace
+	# the model, key, messages or timeout.
 	kwargs: dict[str, Any] = {
+		**(config.get("model_params") or {}),
 		"model": model,
 		"api_key": config.get("api_key"),
 		"messages": messages,
 		"timeout": TIMEOUT,
-		**config.get("model_params", {}),
 	}
 	if api_base:
 		kwargs["api_base"] = api_base
@@ -103,10 +121,12 @@ def _chat_flow_app(model_name: str, messages: list[dict]) -> tuple[str | None, d
 def _usage(usage: Any) -> dict | None:
 	if not usage:
 		return None
-	return {
-		"prompt_tokens": usage.get("prompt_tokens", 0) or 0,
-		"completion_tokens": usage.get("completion_tokens", 0) or 0,
-	}
+	return {key: _token_count(usage, key) for key in ("prompt_tokens", "completion_tokens")}
+
+
+def _token_count(usage: Any, key: str) -> int:
+	value = usage.get(key) if hasattr(usage, "get") else getattr(usage, key, None)
+	return value or 0
 
 
 def parse_object(content: str | None) -> dict | None:

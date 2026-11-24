@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import inspect
 import sys
+from contextlib import contextmanager
 from importlib.abc import Loader, MetaPathFinder
 from importlib.machinery import ModuleSpec
 from types import ModuleType, SimpleNamespace
@@ -73,6 +74,19 @@ class _BrokenInside(MetaPathFinder, Loader):
 		raise ModuleNotFoundError("No module named 'pydantic_core'", name="pydantic_core")
 
 
+@contextmanager
+def _flow_modules(fakes: dict):
+	"""Only these Flow modules, none of the real ones a frappe >= 16.60 bench has loaded.
+
+	Real Flow code run in here would import doctype modules that patch.dict drops on
+	exit; their classes are then loaded twice, and frappe's pickled caches fail on them."""
+	with patch.dict(sys.modules, fakes):
+		for name in (*ai.FRAPPE_FLOW, *ai.FLOW_APP):
+			if name not in fakes:
+				sys.modules.pop(name, None)
+		yield
+
+
 def _reply(content: str, usage=None) -> SimpleNamespace:
 	usage = usage or {"prompt_tokens": 7, "completion_tokens": 3}
 	return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content))], usage=usage)
@@ -83,7 +97,7 @@ class AskJsonTest(IntegrationTestCase):
 		completion = MagicMock(return_value=_reply('{"a": 1}'))
 		app_model = MagicMock()
 		modules = _frappe_flow(completion)
-		with patch.dict(sys.modules, {**modules, **_flow_app(app_model)}):
+		with _flow_modules({**modules, **_flow_app(app_model)}):
 			answer, got = ai.ask_json("Claude", MESSAGES, SCHEMA)
 		self.assertEqual(answer, {"a": 1})
 		self.assertEqual(got, {"prompt_tokens": 7, "completion_tokens": 3})
@@ -100,7 +114,7 @@ class AskJsonTest(IntegrationTestCase):
 	def test_extra_params_cannot_override_timeout(self):
 		completion = MagicMock(return_value=_reply('{"a": 1}'))
 		extra = {"timeout": 5, "model": "other", "temperature": 0, "top_p": 0.5}
-		with patch.dict(sys.modules, _frappe_flow(completion, extra)):
+		with _flow_modules(_frappe_flow(completion, extra)):
 			answer, _ = ai.ask_json("Claude", MESSAGES, SCHEMA)
 		self.assertEqual(answer, {"a": 1})
 		kwargs = completion.call_args.kwargs
@@ -110,7 +124,7 @@ class AskJsonTest(IntegrationTestCase):
 	def test_usage_as_attributes(self):
 		usage = SimpleNamespace(prompt_tokens=11, completion_tokens=None)
 		completion = MagicMock(return_value=_reply('{"a": 1}', usage))
-		with patch.dict(sys.modules, _frappe_flow(completion)):
+		with _flow_modules(_frappe_flow(completion)):
 			_, got = ai.ask_json("Claude", MESSAGES, SCHEMA)
 		self.assertEqual(got, {"prompt_tokens": 11, "completion_tokens": 0})
 
@@ -125,7 +139,7 @@ class AskJsonTest(IntegrationTestCase):
 
 		modules["frappe.flow.lib.model"].model_config.side_effect = disabled
 		with (
-			patch.dict(sys.modules, modules),
+			_flow_modules(modules),
 			patch.dict(ai.frappe.flags, {"mute_messages": False}),
 			patch.object(ai.frappe, "log_error") as log,
 		):
@@ -144,13 +158,12 @@ class AskJsonTest(IntegrationTestCase):
 		}
 		traceback = []
 		with (
-			patch.dict(sys.modules, modules),
+			_flow_modules(modules),
 			patch.object(sys, "meta_path", [_BrokenInside(), *sys.meta_path]),
 			patch.object(
 				ai.frappe, "log_error", side_effect=lambda *a, **k: traceback.append(sys.exc_info()[1])
 			),
 		):
-			sys.modules.pop("frappe.flow.lib.model", None)
 			self.assertEqual(ai.ask_json("Claude", MESSAGES, SCHEMA), (None, None))
 		self.assertEqual(len(traceback), 1)
 		self.assertEqual(traceback[0].name, "pydantic_core")
@@ -160,7 +173,7 @@ class AskJsonTest(IntegrationTestCase):
 		app_model = MagicMock()
 		app_model.return_value.chat.return_value = SimpleNamespace(content='{"b": 2}', usage=None)
 		stale = {"frappe.flow": _package("frappe.flow"), "frappe.flow.lib": None}
-		with patch.dict(sys.modules, {**stale, **_flow_app(app_model)}):
+		with _flow_modules({**stale, **_flow_app(app_model)}):
 			answer, _ = ai.ask_json("Claude", MESSAGES, SCHEMA)
 		self.assertEqual(answer, {"b": 2})
 		app_model.assert_called_once_with("Claude")
@@ -170,7 +183,7 @@ class AskJsonTest(IntegrationTestCase):
 		modules = _frappe_flow(completion)
 		# importlib.util.find_spec raises ValueError on such a module.
 		self.assertIsNone(modules["frappe.flow"].__spec__)
-		with patch.dict(sys.modules, modules):
+		with _flow_modules(modules):
 			answer, _ = ai.ask_json("Claude", MESSAGES, SCHEMA)
 		self.assertEqual(answer, {"a": 1})
 
@@ -189,7 +202,7 @@ class AskJsonTest(IntegrationTestCase):
 		app_model.return_value.chat.return_value = SimpleNamespace(
 			content='{"b": 2}', usage={"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3}
 		)
-		with patch.dict(sys.modules, {**NO_FRAPPE_FLOW, **_flow_app(app_model)}):
+		with _flow_modules({**NO_FRAPPE_FLOW, **_flow_app(app_model)}):
 			answer, usage = ai.ask_json("Claude", MESSAGES, SCHEMA)
 		self.assertEqual(answer, {"b": 2})
 		self.assertEqual(usage, {"prompt_tokens": 1, "completion_tokens": 2})
@@ -197,7 +210,7 @@ class AskJsonTest(IntegrationTestCase):
 
 	def test_no_flow_at_all(self):
 		with (
-			patch.dict(sys.modules, {**NO_FRAPPE_FLOW, **NO_FLOW_APP}),
+			_flow_modules({**NO_FRAPPE_FLOW, **NO_FLOW_APP}),
 			patch.object(ai.frappe, "log_error") as log,
 		):
 			self.assertEqual(ai.ask_json("Claude", MESSAGES, SCHEMA), (None, None))

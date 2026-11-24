@@ -93,6 +93,12 @@ def _reply(content: str, usage=None) -> SimpleNamespace:
 
 
 class AskJsonTest(IntegrationTestCase):
+	def setUp(self):
+		super().setUp()
+		# The backend is cached per process; each test fakes a different one.
+		ai._chat_function.cache_clear()
+		self.addCleanup(ai._chat_function.cache_clear)
+
 	def test_frappe_flow_is_preferred(self):
 		completion = MagicMock(return_value=_reply('{"a": 1}'))
 		app_model = MagicMock()
@@ -120,6 +126,30 @@ class AskJsonTest(IntegrationTestCase):
 		kwargs = completion.call_args.kwargs
 		self.assertEqual((kwargs["timeout"], kwargs["model"]), (ai.TIMEOUT, "anthropic/m"))
 		self.assertEqual((kwargs["temperature"], kwargs["top_p"]), (0, 0.5))
+
+	def test_extra_params_cannot_change_the_reply_shape(self):
+		completion = MagicMock(return_value=_reply('{"a": 1}'))
+		extra = {"stream": True, "tools": [{}], "response_format": {"type": "json_object"}, "seed": 1}
+		with _flow_modules(_frappe_flow(completion, extra)):
+			answer, _ = ai.ask_json("Claude", MESSAGES, SCHEMA)
+		self.assertEqual(answer, {"a": 1})
+		kwargs = completion.call_args.kwargs
+		self.assertFalse({"stream", "tools", "response_format"} & kwargs.keys())
+		self.assertEqual(kwargs["seed"], 1)
+
+	def test_a_key_only_in_extra_params_is_kept(self):
+		completion = MagicMock(return_value=_reply('{"a": 1}'))
+		modules = _frappe_flow(completion, {"api_key": "from-extra"})
+		config = modules["frappe.flow.lib.model"].model_config
+		config.return_value["api_key"] = None
+		with _flow_modules(modules):
+			ai.ask_json("Claude", MESSAGES, SCHEMA)
+		self.assertEqual(completion.call_args.kwargs["api_key"], "from-extra")
+
+		config.return_value["api_key"] = "from-model"
+		with _flow_modules(modules):
+			ai.ask_json("Claude", MESSAGES, SCHEMA)
+		self.assertEqual(completion.call_args.kwargs["api_key"], "from-model")
 
 	def test_usage_as_attributes(self):
 		usage = SimpleNamespace(prompt_tokens=11, completion_tokens=None)
@@ -169,6 +199,19 @@ class AskJsonTest(IntegrationTestCase):
 		self.assertEqual(traceback[0].name, "pydantic_core")
 		app_model.assert_not_called()
 
+	def test_a_broken_flow_is_not_cached(self):
+		broken = {"frappe.flow": _package("frappe.flow"), "frappe.flow.lib": _package("frappe.flow.lib")}
+		with (
+			_flow_modules({**broken, **NO_FLOW_APP}),
+			patch.object(sys, "meta_path", [_BrokenInside(), *sys.meta_path]),
+			patch.object(ai.frappe, "log_error"),
+		):
+			self.assertEqual(ai.ask_json("Claude", MESSAGES, SCHEMA), (None, None))
+		completion = MagicMock(return_value=_reply('{"a": 1}'))
+		with _flow_modules(_frappe_flow(completion)):
+			answer, _ = ai.ask_json("Claude", MESSAGES, SCHEMA)
+		self.assertEqual(answer, {"a": 1})
+
 	def test_leftover_frappe_flow_directory_falls_back_to_flow_app(self):
 		app_model = MagicMock()
 		app_model.return_value.chat.return_value = SimpleNamespace(content='{"b": 2}', usage=None)
@@ -177,15 +220,6 @@ class AskJsonTest(IntegrationTestCase):
 			answer, _ = ai.ask_json("Claude", MESSAGES, SCHEMA)
 		self.assertEqual(answer, {"b": 2})
 		app_model.assert_called_once_with("Claude")
-
-	def test_module_without_spec_does_not_raise(self):
-		completion = MagicMock(return_value=_reply('{"a": 1}'))
-		modules = _frappe_flow(completion)
-		# importlib.util.find_spec raises ValueError on such a module.
-		self.assertIsNone(modules["frappe.flow"].__spec__)
-		with _flow_modules(modules):
-			answer, _ = ai.ask_json("Claude", MESSAGES, SCHEMA)
-		self.assertEqual(answer, {"a": 1})
 
 	def test_frappe_flow_api_matches(self):
 		"""The real module, where the bench has frappe >= 16.60: the names and arguments ai.py uses."""
@@ -213,5 +247,6 @@ class AskJsonTest(IntegrationTestCase):
 			_flow_modules({**NO_FRAPPE_FLOW, **NO_FLOW_APP}),
 			patch.object(ai.frappe, "log_error") as log,
 		):
+			self.assertEqual(ai.ask_json("Claude", MESSAGES, SCHEMA), (None, None))
 			self.assertEqual(ai.ask_json("Claude", MESSAGES, SCHEMA), (None, None))
 		log.assert_called_once()

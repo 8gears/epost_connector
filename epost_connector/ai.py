@@ -16,6 +16,7 @@ loses nothing.
 
 from __future__ import annotations
 
+import functools
 import importlib
 import json
 import re
@@ -31,6 +32,23 @@ FENCE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE)
 # frappe fails on one of these names too, so it does not hide the flow app.
 FRAPPE_FLOW = ("frappe.flow", "frappe.flow.lib", "frappe.flow.lib.model")
 FLOW_APP = ("flow", "flow.lib", "flow.lib.model")
+# Extra Params that would make litellm return a stream, a tool call or audio instead of
+# one text message, or that would switch on the response_format emulation the module
+# docstring explains.
+NOT_FROM_EXTRA_PARAMS = frozenset(
+	{
+		"stream",
+		"stream_options",
+		"response_format",
+		"tools",
+		"tool_choice",
+		"parallel_tool_calls",
+		"functions",
+		"function_call",
+		"modalities",
+		"audio",
+	}
+)
 
 
 def ask_json(model_name: str, messages: list[dict], schema: dict) -> tuple[dict | None, dict | None]:
@@ -44,7 +62,6 @@ def ask_json(model_name: str, messages: list[dict], schema: dict) -> tuple[dict 
 	try:
 		chat = _chat_function()
 		if chat is None:
-			frappe.log_error("ePost: Frappe Flow is not installed", reference_doctype="ePost Settings")
 			return None, None
 		content, usage = _muted(chat, model_name, messages)
 	except Exception:
@@ -54,11 +71,15 @@ def ask_json(model_name: str, messages: list[dict], schema: dict) -> tuple[dict 
 	return parse_object(content), usage
 
 
+@functools.cache
 def _chat_function():
+	"""Resolved once per process. A broken Flow raises, which functools.cache does not
+	store, so it is retried and logged on every call; a missing one is logged once."""
 	if _installed("frappe.flow.lib.model", FRAPPE_FLOW):
 		return _chat_frappe_flow
 	if _installed("flow.lib.model", FLOW_APP):
 		return _chat_flow_app
+	frappe.log_error("ePost: Frappe Flow is not installed", reference_doctype="ePost Settings")
 	return None
 
 
@@ -96,15 +117,17 @@ def _chat_frappe_flow(model_name: str, messages: list[dict]) -> tuple[str | None
 
 	config = model_config(model_name, check_permission=False)
 	model, api_base = litellm_route(config["model"], config.get("api_base"))
+	extra = config.get("model_params") or {}
 	# Extra Params first, as frappe's FlowModel.test_connection does, so they cannot replace
-	# the model, key, messages or timeout.
+	# the model, messages or timeout. A key or base URL only the Extra Params hold is kept.
 	kwargs: dict[str, Any] = {
-		**(config.get("model_params") or {}),
+		**{key: value for key, value in extra.items() if key not in NOT_FROM_EXTRA_PARAMS},
 		"model": model,
-		"api_key": config.get("api_key"),
 		"messages": messages,
 		"timeout": TIMEOUT,
 	}
+	if api_key := config.get("api_key"):
+		kwargs["api_key"] = api_key
 	if api_base:
 		kwargs["api_base"] = api_base
 	response = litellm.completion(**kwargs)

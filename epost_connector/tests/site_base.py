@@ -66,6 +66,41 @@ def purge() -> None:
 			os.remove(frappe.get_site_path(attachment.file_url.lstrip("/")))
 
 
+class SupplierState:
+	"""The Suppliers, their tax ids and the Supplier Aliases, as a test found them.
+
+	The matcher reads every Supplier and alias on the site and matches on the
+	letter's sender as well as the extracted name. A Supplier one module leaves
+	behind therefore decides where another module's letters go: `Muster Elektro
+	AG` from test_import_invoice is the mock's sender of inbox-1, so test_process
+	saw its "unknown" vendor drafted, and the tax id test_process left on a
+	Supplier matched test_flow_extractor's answer. Both only when the module that
+	leaked ran first, which is the order `os.walk` happens to return.
+	"""
+
+	def __init__(self, tax_ids: dict[str, str | None], aliases: set[str]):
+		self.tax_ids = tax_ids
+		self.aliases = aliases
+
+	@classmethod
+	def capture(cls) -> SupplierState:
+		return cls(
+			dict(frappe.get_all("Supplier", fields=["name", "tax_id"], as_list=True)),
+			set(frappe.get_all("Supplier Alias", pluck="name")),
+		)
+
+	def restore(self) -> None:
+		now = SupplierState.capture()
+		for alias in now.aliases - self.aliases:
+			frappe.db.delete("Supplier Alias", {"name": alias})
+		for name, tax_id in now.tax_ids.items():
+			if name not in self.tax_ids:
+				frappe.delete_doc("Supplier", name, force=True, ignore_permissions=True)
+			elif tax_id != self.tax_ids[name]:
+				frappe.db.set_value("Supplier", name, "tax_id", self.tax_ids[name], update_modified=False)
+		frappe.db.commit()
+
+
 class ePostSiteTestCase(IntegrationTestCase):
 	"""A site, a mock ePost on the loopback, and settings pointing at it."""
 
@@ -77,6 +112,9 @@ class ePostSiteTestCase(IntegrationTestCase):
 		self.addCleanup(self.mock.stop)
 		self.state = self.mock.state
 
+		# Registered before `purge` so it runs after it: the drafts `purge`
+		# deletes link to the Suppliers this removes.
+		self.addCleanup(SupplierState.capture().restore)
 		purge()
 		self.addCleanup(purge)
 
@@ -225,9 +263,14 @@ def ensure_erpnext_fixtures() -> None:
 		chart of accounts and before the cost centres, leaving a half-built
 		company behind;
 	  * UOM "Nos" — `import_invoice._build_item` names it on every invoice line,
-		so every import fails with `Could not find Row #1: UOM: Nos`.
+		so every import fails with `Could not find Row #1: UOM: Nos`;
+	  * Party Type "Supplier" — since erpnext 2bbafa39 (version-16, 2026-10-27)
+		`validate_account_party_type` (erpnext/accounts/party.py:921-926) refuses
+		a GL Entry whose party type has no row, so submitting any Purchase Invoice
+		fails with `Supplier is not a valid Party Type`. The wizard's row is
+		erpnext/setup/setup_wizard/operations/install_fixtures.py:297.
 
-	Only these two are created. A fixture file that quietly grows to stand in for
+	Only these three are created. A fixture file that quietly grows to stand in for
 	the whole setup wizard stops being evidence of anything.
 	"""
 	if not frappe.db.exists("Warehouse Type", "Transit"):
@@ -235,6 +278,11 @@ def ensure_erpnext_fixtures() -> None:
 
 	if not frappe.db.exists("UOM", "Nos"):
 		frappe.get_doc({"doctype": "UOM", "uom_name": "Nos", "must_be_whole_number": 1}).insert(
+			ignore_permissions=True
+		)
+
+	if not frappe.db.exists("Party Type", "Supplier"):
+		frappe.get_doc({"doctype": "Party Type", "party_type": "Supplier", "account_type": "Payable"}).insert(
 			ignore_permissions=True
 		)
 

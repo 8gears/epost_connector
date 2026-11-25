@@ -17,7 +17,7 @@ env:
   ERPNEXT_BRANCH: version-16
   SITE: test_site
   # `working-directory:` does not expand `~`, so the bench path is absolute.
-  # /home/runner is the ubuntu-latest runner's home.
+  # /home/runner is the ubuntu-24.04 runner's home.
   BENCH: /home/runner/frappe-bench
 
 jobs:

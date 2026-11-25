@@ -1,19 +1,23 @@
 """One JSON answer from a Frappe Flow model.
 
-Flow is an optional app, so everything here degrades to `None` rather than
-raising: a letter the model could not read is the same outcome as a letter no
-model was asked about.
+frappe >= 16.60 has Flow built in; on older frappe it is the optional `flow`
+app. Either may be missing or fail, so everything here degrades to `None`
+rather than raising: a letter the model could not read is the same outcome as a
+letter no model was asked about.
 
-The schema goes into the prompt instead of `response_format`. litellm 1.83.7
-emulates `response_format` for Anthropic models it does not list as supporting
-structured output by forcing a tool call, and newer models refuse that with
-"tool_choice: type "tool" and "any" are not supported for this model". Every
-caller validates the answer against what it may contain anyway, so a prompt-level
-schema loses nothing.
+The schema goes into the prompt instead of `response_format`. litellm 1.83.7, the
+last the flow app allows, emulates `response_format` for Anthropic models it does
+not list as supporting structured output by forcing a tool call, and newer models
+refuse that with "tool_choice: type "tool" and "any" are not supported for this
+model". frappe 16.60.2 pins litellm 1.103.2, not checked for this. Every caller
+validates the answer against what it may contain anyway, so a prompt-level schema
+loses nothing.
 """
 
 from __future__ import annotations
 
+import functools
+import importlib
 import json
 import re
 from typing import Any
@@ -23,15 +27,32 @@ import frappe
 # The flow app's Model default.
 TIMEOUT = 60
 FENCE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE)
+# A ModuleNotFoundError naming one of these means that Flow is not installed; any other
+# name means it is installed and broken. A leftover frappe/flow directory from a newer
+# frappe fails on one of these names too, so it does not hide the flow app.
+FRAPPE_FLOW = ("frappe.flow", "frappe.flow.lib", "frappe.flow.lib.model")
+FLOW_APP = ("flow", "flow.lib", "flow.lib.model")
+# Extra Params that would make litellm return a stream, a tool call or audio instead of
+# one text message, or that would switch on the response_format emulation the module
+# docstring explains.
+NOT_FROM_EXTRA_PARAMS = frozenset(
+	{
+		"stream",
+		"stream_options",
+		"response_format",
+		"tools",
+		"tool_choice",
+		"parallel_tool_calls",
+		"functions",
+		"function_call",
+		"modalities",
+		"audio",
+	}
+)
 
 
 def ask_json(model_name: str, messages: list[dict], schema: dict) -> tuple[dict | None, dict | None]:
 	"""Return (answer, usage). The answer is None when there is no usable JSON object."""
-	chat = _chat_function()
-	if chat is None:
-		frappe.log_error("ePost: Frappe Flow is not installed", reference_doctype="ePost Settings")
-		return None, None
-
 	messages = [dict(m) for m in messages]
 	messages[0]["content"] = (
 		f"{messages[0]['content']}\n\nReply with one JSON object and nothing else. "
@@ -39,7 +60,10 @@ def ask_json(model_name: str, messages: list[dict], schema: dict) -> tuple[dict 
 	)
 
 	try:
-		content, usage = chat(model_name, messages)
+		chat = _chat_function()
+		if chat is None:
+			return None, None
+		content, usage = _muted(chat, model_name, messages)
 	except Exception:
 		frappe.log_error("ePost: model call failed", reference_doctype="ePost Settings")
 		return None, None
@@ -47,44 +71,66 @@ def ask_json(model_name: str, messages: list[dict], schema: dict) -> tuple[dict 
 	return parse_object(content), usage
 
 
+@functools.cache
 def _chat_function():
-	"""frappe's built-in Flow (frappe >= 16.60) when present, else the separate `flow` app."""
-	try:
-		from frappe.flow.lib import model
-	except ImportError:
-		pass
-	else:
+	"""Resolved once per process. A broken Flow raises, which functools.cache does not
+	store, so it is retried and logged on every call; a missing one is logged once."""
+	if _installed("frappe.flow.lib.model", FRAPPE_FLOW):
 		return _chat_frappe_flow
+	if _installed("flow.lib.model", FLOW_APP):
+		return _chat_flow_app
+	frappe.log_error("ePost: Frappe Flow is not installed", reference_doctype="ePost Settings")
+	return None
+
+
+def _installed(module: str, absent_names: tuple[str, ...]) -> bool:
 	try:
-		from flow.lib.model import Model
-	except ImportError:
-		return None
-	return _chat_flow_app
+		importlib.import_module(module)
+	except ModuleNotFoundError as exc:
+		if exc.name not in absent_names:
+			raise
+		return False
+	return True
+
+
+def _muted(chat, model_name: str, messages: list[dict]) -> tuple[str | None, dict | None]:
+	"""A frappe.throw on the way (a disabled Flow Model) would queue an error dialog for the
+	Desk user, but ask_json swallows and logs the failure, so the dialog would be stale."""
+	muted = frappe.flags.mute_messages
+	frappe.flags.mute_messages = True
+	try:
+		return chat(model_name, messages)
+	finally:
+		frappe.flags.mute_messages = muted
 
 
 def _chat_frappe_flow(model_name: str, messages: list[dict]) -> tuple[str | None, dict | None]:
 	"""frappe's Flow has no chat call outside its daemon, so litellm is called with its config.
 
-	No Flow Model permission check: the model is the one ePost Settings names, not the caller's
-	choice, and the old app's `Model` checked nothing. The desk actions that reach here
-	(`process`, `review`) already require write on the letter.
-	The model's Extra Params go first and the connector's arguments last, as frappe's own
-	`FlowModel.test_connection` does, so a `timeout` in Extra Params cannot collide with ours."""
+	The Flow Model permission check is off: the model is the one ePost Settings names, not
+	the caller's choice, and every caller has already checked its own right to act (write on
+	the letter, or frappe.only_for). The flow app checked no permission either. With the
+	check on, a Desk-triggered job runs as the clicking user and an Accounts user without
+	read on Flow Model would get no answer."""
 	import litellm
 	from frappe.flow.lib.model import litellm_route, model_config
 
 	config = model_config(model_name, check_permission=False)
 	model, api_base = litellm_route(config["model"], config.get("api_base"))
-	response = litellm.completion(
-		**{
-			**config.get("model_params", {}),
-			"model": model,
-			"api_key": config.get("api_key"),
-			"api_base": api_base,
-			"messages": messages,
-			"timeout": TIMEOUT,
-		}
-	)
+	extra = config.get("model_params") or {}
+	# Extra Params first, as frappe's FlowModel.test_connection does, so they cannot replace
+	# the model, messages or timeout. A key or base URL only the Extra Params hold is kept.
+	kwargs: dict[str, Any] = {
+		**{key: value for key, value in extra.items() if key not in NOT_FROM_EXTRA_PARAMS},
+		"model": model,
+		"messages": messages,
+		"timeout": TIMEOUT,
+	}
+	if api_key := config.get("api_key"):
+		kwargs["api_key"] = api_key
+	if api_base:
+		kwargs["api_base"] = api_base
+	response = litellm.completion(**kwargs)
 	return response.choices[0].message.content, _usage(getattr(response, "usage", None))
 
 
@@ -96,14 +142,14 @@ def _chat_flow_app(model_name: str, messages: list[dict]) -> tuple[str | None, d
 
 
 def _usage(usage: Any) -> dict | None:
-	"""litellm's usage object, or the flow app's usage dict, as the two token counts."""
 	if not usage:
 		return None
-	get = usage.get if isinstance(usage, dict) else lambda key, default: getattr(usage, key, default)
-	return {
-		"prompt_tokens": get("prompt_tokens", 0) or 0,
-		"completion_tokens": get("completion_tokens", 0) or 0,
-	}
+	return {key: _token_count(usage, key) for key in ("prompt_tokens", "completion_tokens")}
+
+
+def _token_count(usage: Any, key: str) -> int:
+	value = usage.get(key) if hasattr(usage, "get") else getattr(usage, key, None)
+	return value or 0
 
 
 def parse_object(content: str | None) -> dict | None:

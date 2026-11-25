@@ -59,8 +59,9 @@ linked Purchase Invoice, the attached PDF — is left alone.
 
 ## Document extraction
 
-The app ships a no-op extractor (the default) and `FlowExtractor`, which needs the optional Frappe Flow
-app and an enabled Flow Model named in `ePost Settings.flow_model`. With `Flow`, letter content is sent
+The app ships a no-op extractor (the default) and `FlowExtractor`, which needs Frappe Flow (built into
+frappe 16.60 and later; on older frappe, install the `flow` app) and an enabled Flow Model named in `ePost Settings.flow_model`.
+The Flow Model's roles are not checked; anyone allowed to process a letter uses that model. With `Flow`, letter content is sent
 to the model's provider; see the README, *Extraction* and *Booking suggestion*. `epost_connector/extraction/` defines the contract:
 
 ```python
